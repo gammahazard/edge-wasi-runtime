@@ -1,5 +1,11 @@
 # WASI Python Host
 
+![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)
+![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
+![WebAssembly](https://img.shields.io/badge/webassembly-%23654FF0.svg?style=for-the-badge&logo=webassembly&logoColor=white)
+![Raspberry Pi](https://img.shields.io/badge/-Raspberry_Pi-C51A4A?style=for-the-badge&logo=Raspberry-Pi)
+![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
+
 A reference implementation demonstrating **Python WASM modules** reading **real DHT22 sensor data** on a Raspberry Pi, using the **WASI Component Model** with a Rust host.
 
 ## The Key Demonstration
