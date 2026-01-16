@@ -52,48 +52,46 @@ The following diagram illustrates how the Rust Host securely manages the Python 
 
 ```mermaid
 graph TD
-    subgraph "Raspberry Pi (Physical Device)"
+    subgraph Pi [Raspberry Pi Device]
         DHT22[DHT22 Sensor]
         GPIO[GPIO Pins]
     end
 
-    subgraph "Rust Host (OS Process)"
+    subgraph Host [Rust Host Process]
         Runtime[WasmRuntime]
         Linker[Wasmtime Linker]
         
-        subgraph "Host Capabilities"
+        subgraph Caps [Host Capabilities]
             GPIO_Mod[GPIO Module]
             HTTP_Mod[HTTP Server]
         end
     end
 
-    subgraph "WASM Sandbox (Guest)"
-        subgraph "Sensor Plugin (Python)"
+    subgraph Guest [WASM Sandbox]
+        subgraph Python1 [Sensor Plugin]
             SensorApp[app.py]
         end
         
-        subgraph "Dashboard Plugin (Python)"
+        subgraph Python2 [Dashboard Plugin]
             DashboardApp[app.py]
         end
     end
 
-    %% Access Flow
     HTTP_Mod -->|Request| Runtime
-    Runtime -->|render()| DashboardApp
+    Runtime -->|render calls| DashboardApp
     DashboardApp -->|HTML| HTTP_Mod
     
-    Runtime -->|poll()| SensorApp
-    SensorApp -->|read_dht22()| Linker
+    Runtime -->|poll calls| SensorApp
+    SensorApp -->|read_dht22| Linker
     Linker -->|Secure Call| GPIO_Mod
     GPIO_Mod -->|Subprocess| GPIO
-    GPIO -->|Electrical Signal| DHT22
+    GPIO -->|Signal| DHT22
 
-    %% Styling
     style DHT22 fill:#ff6666,stroke:#333
     style GPIO fill:#ff6666,stroke:#333
     style SensorApp fill:#66ff66,stroke:#333,color:black
     style DashboardApp fill:#66bbff,stroke:#333,color:black
-    style Rust Host fill:#eee,stroke:#333
+    style Host fill:#eee,stroke:#333
 ```
 
 ### 🎥 Live Demos
