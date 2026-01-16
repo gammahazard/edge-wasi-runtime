@@ -1,0 +1,96 @@
+// =============================================================================
+// plugin.wit - The API Contract
+// =============================================================================
+//
+// WHAT IS THIS?
+// This file defines the "Constitution" of our application. It strictly defines
+// what the Host (Rust) provides and what the Guest (Python) requires.
+//
+// WHY IS THIS SECURE?
+// 1. Sandboxing: The Python code runs in a WASM sandbox. It CANNOT access
+//    files, network, or hardware unless explicitly allowed here.
+// 2. Capabilities: The `import` statements are the ONLY capabilities we give.
+//    If we don't import `network`, the Python code physically cannot make requests.
+// 3. Type Safety: Rust and Python data types are bridged automatically. No
+//    more parsing JSON strings or unchecked void pointers.
+//
+// HOW IT WORKS:
+// The `wit-bindgen` and `componentize-py` tools read this file and generate:
+// - Rust traits (Host)
+// - Python classes (Guest)
+// The runtime instantiates the WASM and links these together.
+
+package demo:plugin@0.1.0;
+
+// =============================================================================
+// ARCHITECTURE OVERVIEW
+// =============================================================================
+//
+// HOST (Rust) <---> [ Boundary (this file) ] <---> GUEST (Python WASM)
+//      |                                                 |
+//  [Real Hardware]                                  [Business Logic]
+//      |                                                 |
+//   DHT22 Sensor                                    Data Processing
+//                                                   HTML Rendering
+//
+// =============================================================================
+//
+// HOW TO EXTEND THIS (MIGRATION GUIDE):
+//
+// 1. ADD A CAPABILITY:
+//    To add a new hardware feature (e.g., an LED), define it here first:
+//    `interface led-controller { func turn-on(); func turn-off(); }`
+//    Then implement it in the Rust host (`host/src/runtime.rs`).
+//
+// 2. MIGRATE LOGIC GRADUALLY:
+//    - Start with a monolith Python script.
+//    - Identify ONE function (e.g., "calculate_average").
+//    - Move it to a `.wit` interface.
+//    - Run it in WASM.
+//    - Repeat until the legacy script is gone.
+//
+// 3. WHY DO THIS?
+//    Every line of code you move to WASM becomes sandboxed. If it crashes,
+//    it doesn't take down the kernel or the host.
+//
+// =============================================================================
+
+interface gpio-provider {
+    // read temperature and humidity from dht22 sensor on given gpio pin
+    //
+    // @param pin: The BCM GPIO pin number (e.g., 4)
+    // @returns: Result containing (temp_c, hum_%) tuple OR error string
+    read-dht22: func(pin: u8) -> result<tuple<f32, f32>, string>;
+    
+    // get current timestamp in milliseconds (unix epoch)
+    // used for timestamping readings since WASM has no system clock access by default
+    get-timestamp-ms: func() -> u64;
+}
+
+interface sensor-logic {
+    record sensor-reading {
+        sensor-id: string,
+        temperature: f32,
+        humidity: f32,
+        timestamp-ms: u64,
+    }
+
+    // poll the dht22 sensor and return readings
+    // called by the host every 5 seconds
+    poll: func() -> list<sensor-reading>;
+}
+
+interface dashboard-logic {
+    // render a complete html dashboard page with real sensor data
+    // called by the host when a browser hits http://host:3000/
+    render: func(temperature: f32, humidity: f32) -> string;
+}
+
+world sensor-plugin {
+    import gpio-provider;
+    export sensor-logic;
+}
+
+world dashboard-plugin {
+    export dashboard-logic;
+}

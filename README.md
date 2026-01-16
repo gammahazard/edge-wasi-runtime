@@ -67,14 +67,14 @@ graph TD
         end
         
         subgraph "Dashboard Plugin (Python)"
-            DashApp[app.py]
+            DashboardApp[app.py]
         end
     end
 
     %% Access Flow
     HTTP_Mod -->|Request| Runtime
-    Runtime -->|render()| DashApp
-    DashApp -->|HTML| HTTP_Mod
+    Runtime -->|render()| DashboardApp
+    DashboardApp -->|HTML| HTTP_Mod
     
     Runtime -->|poll()| SensorApp
     SensorApp -->|read_dht22()| Linker
@@ -86,7 +86,7 @@ graph TD
     style DHT22 fill:#ff6666,stroke:#333
     style GPIO fill:#ff6666,stroke:#333
     style SensorApp fill:#66ff66,stroke:#333,color:black
-    style DashApp fill:#66bbff,stroke:#333,color:black
+    style DashboardApp fill:#66bbff,stroke:#333,color:black
     style Rust Host fill:#eee,stroke:#333
 ```
 
@@ -267,5 +267,3 @@ componentize-py -d ../../wit -w sensor-plugin componentize app -o sensor.wasm
 ## License
 
 MIT
-#   e d g e - w a s i - r u n t i m e  
- 
