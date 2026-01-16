@@ -115,28 +115,28 @@ class DashboardLogic(DashboardLogic):
     
     <!-- inline css - complete design system -->
     <style>
-        /* ==== design tokens (CYBERPUNK THEME) ==== */
+        /* ==== design tokens (TERMINAL/CRT THEME) ==== */
         :root {{
-            --bg-primary: #050008;  /* Deep black/purple */
-            --bg-card: #150020;     /* Rich purple */
-            --bg-hover: #250035;
-            --accent: #ff00ff;      /* NEON MAGENTA */
-            --text-primary: #ffffff;
-            --text-secondary: #d0a0ff;
-            --success: #00ffff;     /* CYAN */
-            --warning: #ffaa00;
-            --danger: #ff0055;
-            --cold: #66bbff;
-            --border-subtle: #440055;
-            --shadow: 0 4px 24px rgba(255,0,255,0.1);
-            --shadow-hover: 0 0 32px rgba(255,0,255,0.3);
+            --bg-primary: #0a0a0a;  /* Deep black */
+            --bg-card: #111111;     /* Slightly lighter black */
+            --bg-hover: #1a1a1a;
+            --accent: #33ff33;      /* TERMINAL GREEN */
+            --text-primary: #33ff33;
+            --text-secondary: #22cc22;
+            --success: #33ff33;     /* GREEN */
+            --warning: #ffcc00;
+            --danger: #ff3333;
+            --cold: #66ccff;
+            --border-subtle: #1a3a1a;
+            --shadow: 0 0 10px rgba(51,255,51,0.1);
+            --shadow-hover: 0 0 20px rgba(51,255,51,0.3);
         }}
         
         /* ==== base reset ==== */
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         
         body {{
-            font-family: 'courier new', monospace; /* HACKER FONT */
+            font-family: 'VT323', 'Courier New', monospace; /* TERMINAL FONT */
             background: var(--bg-primary);
             color: var(--text-primary);
             min-height: 100vh;
@@ -145,24 +145,33 @@ class DashboardLogic(DashboardLogic):
             align-items: center;
             padding: 2rem;
             line-height: 1.5;
-            background-image: linear-gradient(0deg, transparent 24%, rgba(255, 0, 255, .03) 25%, rgba(255, 0, 255, .03) 26%, transparent 27%, transparent 74%, rgba(255, 0, 255, .03) 75%, rgba(255, 0, 255, .03) 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, rgba(255, 0, 255, .03) 25%, rgba(255, 0, 255, .03) 26%, transparent 27%, transparent 74%, rgba(255, 0, 255, .03) 75%, rgba(255, 0, 255, .03) 76%, transparent 77%, transparent);
-            background-size: 50px 50px;
+            /* CRT scanline effect */
+            background-image: 
+                repeating-linear-gradient(
+                    0deg,
+                    rgba(0, 0, 0, 0.15),
+                    rgba(0, 0, 0, 0.15) 1px,
+                    transparent 1px,
+                    transparent 2px
+                );
         }}
         
         /* ==== header ==== */
         .header {{
             text-align: center;
-            margin-bottom: 2rem;
+            margin-bottom: 3rem;
+            border: 2px solid var(--accent);
+            padding: 1rem;
+            background: rgba(0,0,0,0.5);
         }}
         
         .header h1 {{
             font-size: 2.5rem;
-            font-weight: 700;
+            margin-bottom: 1rem;
             color: var(--accent);
-            text-shadow: 0 0 10px var(--accent); /* NEON GLOW */
-            margin-bottom: 0.5rem;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
+            letter-spacing: 0.2em;
+            text-shadow: 0 0 10px var(--accent); /* CRT GLOW */
         }}
         
         .header p {{
@@ -194,13 +203,18 @@ class DashboardLogic(DashboardLogic):
         
         .card {{
             background: var(--bg-card);
-            border-radius: 0; /* BOXIER Cyberpunk look */
-            padding: 2rem;
-            border: 2px solid var(--accent); /* NEON BORDER */
+            padding: 2.5rem;
+            border: 2px solid var(--accent);
+            border-radius: 0; /* Sharp corners */
             box-shadow: var(--shadow);
-            transition: all 0.2s steps(4); /* Glitchy transition */
+            transition: all 0.2s ease;
             position: relative;
-            overflow: hidden;
+        }}
+        
+        .card:hover {{
+            box-shadow: var(--shadow-hover);
+            background: var(--bg-hover);
+            border-color: var(--accent);
         }}
         
         /* Scanline effect */
@@ -231,9 +245,9 @@ class DashboardLogic(DashboardLogic):
             color: var(--success);
             font-size: 1rem;
             text-transform: uppercase;
-            letter-spacing: 0.15em;
-            font-weight: 600;
-            border-bottom: 1px dashed var(--success);
+            letter-spacing: 0.1em;
+            font-weight: 400;
+            border-bottom: 1px solid var(--success);
             padding-bottom: 0.5rem;
         }}
         
@@ -246,6 +260,7 @@ class DashboardLogic(DashboardLogic):
             font-size: 3.5rem;
             font-weight: 700;
             text-shadow: 0 0 15px currentColor; /* GLOWING NUMBERS */
+            transition: opacity 0.15s ease-in-out; /* Smooth fade effect */
         }}
         
         .unit {{
@@ -270,6 +285,18 @@ class DashboardLogic(DashboardLogic):
         }}
         
         /* ==== footer architecture box (UPDATED) ==== */
+        .badge {{
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            margin: 0 0.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--accent);
+            border-radius: 0; /* Sharp corners for terminal look */
+            font-size: 0.9rem;
+            color: var(--accent);
+            font-weight: 400;
+            text-transform: uppercase;
+        }}
         .architecture {{
             margin: 2rem auto;
             max-width: 600px;
@@ -295,11 +322,52 @@ class DashboardLogic(DashboardLogic):
             .reading {{ font-size: 2.5rem; }}
         }}
     </style>
-    
-    <!-- auto-refresh every 2 seconds to show live data -->
-    <meta http-equiv="refresh" content="2">
 </head>
 <body>
+    <script>
+        // Live update system - fetch new data without page reload
+        let lastTemp = {temperature:.1f};
+        let lastHumidity = {humidity:.1f};
+        
+        async function updateReadings() {{
+            try {{
+                const response = await fetch('/api');
+                const data = await response.json();
+                
+                // Get current readings (first in array)
+                if (data.readings && data.readings.length > 0) {{
+                    const reading = data.readings[0];
+                    
+                    // Update temperature if changed
+                    if (reading.temperature !== lastTemp) {{
+                        const tempElement = document.querySelector('.temp');
+                        tempElement.style.opacity = '0.5';
+                        setTimeout(() => {{
+                            tempElement.childNodes[0].textContent = reading.temperature.toFixed(1);
+                            tempElement.style.opacity = '1';
+                        }}, 150);
+                        lastTemp = reading.temperature;
+                    }}
+                    
+                    // Update humidity if changed
+                    if (reading.humidity !== lastHumidity) {{
+                        const humidityElement = document.querySelector('.humidity');
+                        humidityElement.style.opacity = '0.5';
+                        setTimeout(() => {{
+                            humidityElement.childNodes[0].textContent = reading.humidity.toFixed(1);
+                            humidityElement.style.opacity = '1';
+                        }}, 150);
+                        lastHumidity = reading.humidity;
+                    }}
+                }}
+            }} catch (error) {{
+                console.error('Failed to fetch readings:', error);
+            }}
+        }}
+        
+        // Poll every 2 seconds
+        setInterval(updateReadings, 2000);
+    </script>
     <header class="header">
         <h1>// SYSTEM_DASHBOARD</h1>
         <p>

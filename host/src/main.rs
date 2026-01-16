@@ -220,7 +220,7 @@ async fn run_server(
         // dashboard endpoint - html rendered by python wasm
         .route("/", get(dashboard_handler))
         // json api for programmatic access
-        .route("/api/sensors", get(api_handler))
+        .route("/api", get(api_handler))
         // enable cors for development convenience
         .layer(CorsLayer::permissive())
         // share state and runtime with handlers

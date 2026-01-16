@@ -97,13 +97,47 @@ graph TD
 ### 🎥 Live Demos
 We have captured the following capabilities in action:
 
-#### 1. Dashboard Hot Swap (Cyberpunk Theme)
-[![Watch Dashboard Demo](https://img.shields.io/badge/Watch_Visual_Update-Streamable-ff00ff?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/klbojw)
+#### 1. Dashboard Hot Swap (Terminal/CRT Theme)
+[![Watch Dashboard Demo](https://img.shields.io/badge/Watch_Visual_Update-Streamable-33ff33?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/klbojw)
 
 #### 2. Sensor Hot Swap (Logic Update)
 [![Watch Sensor Demo](https://img.shields.io/badge/Watch_Logic_Update-Streamable-00aaff?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/cd3050)
 
 > **Key Takeaway**: The Rust host acts as a stable "Operating System", dealing with GPIO and networking, while the Python guests provide flexible, hot-reloadable "User Space" logic.
+
+## 🎨 User Experience Features
+
+The dashboard demonstrates modern web UX patterns:
+
+- **Live Updates**: Browser polls `/api` endpoint every 2 seconds via JavaScript `fetch()`
+- **Smooth Animations**: Temperature and humidity values fade out → update → fade in (300ms total)
+- **No Page Refresh**: Only the numbers update, eliminating jarring full-page reloads
+- **Terminal Aesthetic**: Retro CRT theme with green-on-black colors and scanline effects
+- **Responsive Design**: Mobile-friendly layout with CSS Grid
+
+**API Endpoint:**
+```bash
+curl http://raspberry-pi:3000/api
+```
+
+**Response:**
+```json
+{
+  "readings": [
+    {
+      "temperature": 21.5,
+      "humidity": 40.9,
+      "timestamp_ms": 1737073200000
+    }
+  ],
+  "last_update": 1737073200000
+}
+```
+
+This `/api` endpoint enables:
+- Programmatic access to sensor data
+- Third-party integrations (Home Assistant, Grafana, etc.)
+- Custom dashboards and mobile apps
 
 ## 🔌 Hardware Requirements
 
