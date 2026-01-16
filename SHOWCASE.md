@@ -7,7 +7,7 @@ This demo proves you can run untrusted Python code on a device with bare-metal a
 
 ---
 
-## 🚀 The Elevator Pitch
+## 🚀 What is this?
 "I have built a **secure plugin system** for IoT devices. It allows developers to write easy Python code to control hardware, but the system is managed by a high-performance Rust host that enforces security and stability."
 
 **Key Features:**
