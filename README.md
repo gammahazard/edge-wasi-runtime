@@ -94,10 +94,10 @@ graph TD
 We have captured the following capabilities in action:
 
 #### 1. Dashboard Hot Swap (Cyberpunk Theme)
-[![Streamable](https://streamable.com/favicon.ico) **Watch Video on Streamable**](https://streamable.com/klbojw)
+[![Watch Dashboard Demo](https://img.shields.io/badge/Watch_Visual_Update-Streamable-ff00ff?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/klbojw)
 
 #### 2. Sensor Hot Swap (Logic Update)
-[![Streamable](https://streamable.com/favicon.ico) **Watch Video on Streamable**](https://streamable.com/cd3050)
+[![Watch Sensor Demo](https://img.shields.io/badge/Watch_Logic_Update-Streamable-00aaff?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/cd3050)
 
 > **Key Takeaway**: The Rust host acts as a stable "Operating System", dealing with GPIO and networking, while the Python guests provide flexible, hot-reloadable "User Space" logic.
 
