@@ -258,7 +258,7 @@ class SensorLogic(SensorLogic):
         )]
 ```
 
-### 3. Rust Implements the Capability
+### 2. Rust Implements the Capability
 
 ```rust
 // The host provides this implementation
