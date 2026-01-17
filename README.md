@@ -241,8 +241,6 @@ interface sensor-logic {
 
 ### 1. Python Calls the Host Capability
 
-### 2. Python Calls the Host Capability
-
 ```python
 # app.py (runs in WASM sandbox)
 from wit_world.imports import gpio_provider
