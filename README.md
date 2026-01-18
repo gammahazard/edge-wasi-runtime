@@ -12,7 +12,8 @@ A reference implementation demonstrating **Python WASM modules** reading **real 
 
 ## The Key Demonstration
 
-This project shows the **WASI capability model** in action:
+This project shows the **WASI capability model** in action.
+> 📘 **Deep Dive**: See [Architecture Deep Dive](docs/advanced_architecture.md) for details on State Persistence, Hysteresis, and the Component Model.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -158,11 +159,18 @@ This `/api` endpoint enables:
 To run this demo, you need:
 1.  **Raspberry Pi** (3, 4, or 5)
 2.  **DHT22 Temperature/Humidity Sensor**
-3.  **Wiring**:
+3.  **BME680 Environmental Sensor (I2C)**
+4.  **Wiring**:
     *   **VCC (+) [Pin 1]** → 3.3V (Physical Pin 1)
     *   **Data [Pin 2]** → **GPIO 4 (Physical Pin 7)**
     *   **GND (-) [Pin 4]** → Ground (Physical Pin 6)
     *   *Note: Most modules have a built-in pull-up resistor. If using a raw sensor, add a 4.7kΩ resistor between VCC and Data.*
+    
+    **BME680 (I2C)**:
+    *   **VCC** → 3.3V
+    *   **GND** → Ground
+    *   **SDA** → GPIO 2 (Pin 3)
+    *   **SCL** → GPIO 3 (Pin 5)
 
 > **Why GPIO 4?** The host is hardcoded to use BCM GPIO 4 (Physical Pin 7) for simplicity in this demo.
 
