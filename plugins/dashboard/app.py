@@ -56,23 +56,24 @@ class DashboardLogic(DashboardLogic):
     """
     implementation of the dashboard-logic interface from plugin.wit.
     
-    the rust host calls render(temperature, humidity) when a browser
+    the rust host calls render(temperature, humidity, cpu_temp) when a browser
     requests the dashboard page. we return complete html.
     
     wit signature:
-        render: func(temperature: f32, humidity: f32) -> string
+        render: func(temperature: f32, humidity: f32, cpu-temp: f32) -> string
     
     python signature:
-        def render(self, temperature: float, humidity: float) -> str
+        def render(self, temperature: float, humidity: float, cpu_temp: float) -> str
     """
     
-    def render(self, temperature: float, humidity: float) -> str:
+    def render(self, temperature: float, humidity: float, cpu_temp: float) -> str:
         """
         render a complete html dashboard page with the given sensor readings.
         
         args:
-            temperature: current temperature in celsius (f32 -> float)
-            humidity: current relative humidity percentage (f32 -> float)
+            temperature: current room temperature in celsius
+            humidity: current relative humidity percentage
+            cpu_temp: raspberry pi cpu temperature in celsius
             
         returns:
             complete html document as a string
@@ -102,6 +103,13 @@ class DashboardLogic(DashboardLogic):
             humidity_class += " danger"
         elif humidity < 20.0:
             humidity_class += " warning"
+        
+        # cpu temp status
+        cpu_class = "reading cpu"
+        if cpu_temp > 70.0:
+            cpu_class += " danger"
+        elif cpu_temp > 50.0:
+            cpu_class += " warning"
         
         # build the complete html page
         # using f-string for templating (simple and fast)
@@ -272,9 +280,49 @@ class DashboardLogic(DashboardLogic):
         
         .temp {{ color: var(--accent); }}
         .humidity {{ color: var(--success); }}
+        .cpu {{ color: #ff9900; }}  /* ORANGE for CPU */
         .cold {{ color: var(--cold); }}
         .warning {{ color: var(--warning); }}
         .danger {{ color: var(--danger); }}
+        
+        /* ==== buzzer controls ==== */
+        .controls {{
+            margin-top: 2rem;
+            text-align: center;
+            padding: 1.5rem;
+            border: 1px solid var(--accent);
+            background: rgba(0,0,0,0.5);
+            max-width: 600px;
+        }}
+        
+        .controls h2 {{
+            color: var(--accent);
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+        }}
+        
+        .btn {{
+            background: transparent;
+            color: var(--accent);
+            border: 2px solid var(--accent);
+            padding: 0.8rem 1.5rem;
+            margin: 0.5rem;
+            font-family: inherit;
+            font-size: 1rem;
+            cursor: pointer;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }}
+        
+        .btn:hover {{
+            background: var(--accent);
+            color: var(--bg-primary);
+            box-shadow: 0 0 15px var(--accent);
+        }}
+        
+        .btn:active {{
+            transform: scale(0.95);
+        }}
         
         /* ==== footer ==== */
         .footer {{
@@ -397,7 +445,34 @@ class DashboardLogic(DashboardLogic):
                 {humidity:.1f}<span class="unit">%</span>
             </div>
         </article>
+        
+        <article class="card">
+            <header class="card-header">
+                <span>>> CPU TEMP</span>
+                <span class="card-icon">[C]</span>
+            </header>
+            <div class="{cpu_class}">
+                {cpu_temp:.1f}<span class="unit">&deg;C</span>
+            </div>
+        </article>
     </main>
+    
+    <!-- Buzzer Controls -->
+    <section class="controls">
+        <h2>>> BUZZER CONTROL</h2>
+        <button class="btn" onclick="buzzerAction('beep')">BEEP ONCE</button>
+        <button class="btn" onclick="buzzerAction('beep3')">3 BEEPS</button>
+    </section>
+    
+    <script>
+        async function buzzerAction(action) {{
+            try {{
+                await fetch('/api/buzzer?action=' + action, {{ method: 'POST' }});
+            }} catch (e) {{
+                console.error('Buzzer error:', e);
+            }}
+        }}
+    </script>
     
     <footer class="footer">
         <p>STATUS: <strong>ONLINE</strong> | RENDERER: <strong>PYTHON_WASM</strong></p>

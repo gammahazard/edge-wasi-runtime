@@ -382,7 +382,7 @@ impl WasmRuntime {
     }
     
     /// render dashboard html using the python wasm plugin
-    pub async fn render_dashboard(&self, temp: f32, humidity: f32) -> Result<String> {
+    pub async fn render_dashboard(&self, temp: f32, humidity: f32, cpu_temp: f32) -> Result<String> {
         // checks hot reload for dashboard too
         self.check_hot_reload();
 
@@ -413,7 +413,7 @@ impl WasmRuntime {
         
         let html = instance
             .demo_plugin_dashboard_logic()
-            .call_render(&mut store, temp, humidity)
+            .call_render(&mut store, temp, humidity, cpu_temp)
             .await
             .context("dashboard render() failed")?;
         
