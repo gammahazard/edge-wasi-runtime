@@ -106,6 +106,70 @@ impl sensor_bindings::demo::plugin::gpio_provider::Host for HostState {
 }
 
 // ==============================================================================
+// led-controller implementation - ws2812b strip capability
+// ==============================================================================
+//
+// hardware: btf lighting ws2812b strip (11 leds) on gpio 18
+//
+// when the python wasm plugin calls led_controller.set_all(255, 0, 0),
+// it comes here. we then call gpio::set_all_leds() which runs a python
+// subprocess to control the actual hardware.
+//
+// relationships:
+//     - implements: ../wit/plugin.wit (led-controller interface)
+//     - calls: gpio.rs (set_led, set_all_leds, clear_leds)
+
+impl sensor_bindings::demo::plugin::led_controller::Host for HostState {
+    /// set a single led to an rgb color
+    async fn set_led(&mut self, index: u8, r: u8, g: u8, b: u8) {
+        tokio::task::spawn_blocking(move || {
+            gpio::set_led(index, r, g, b);
+        }).await.ok();
+    }
+    
+    /// set all leds to the same rgb color
+    async fn set_all(&mut self, r: u8, g: u8, b: u8) {
+        tokio::task::spawn_blocking(move || {
+            gpio::set_all_leds(r, g, b);
+        }).await.ok();
+    }
+    
+    /// turn off all leds
+    async fn clear(&mut self) {
+        tokio::task::spawn_blocking(move || {
+            gpio::clear_leds();
+        }).await.ok();
+    }
+}
+
+// ==============================================================================
+// buzzer-controller implementation - piezo buzzer via relay
+// ==============================================================================
+//
+// hardware: cyclewet buzzer connected via sainsmart relay on gpio 17
+// note: relay is ACTIVE LOW (handled in gpio.rs)
+//
+// relationships:
+//     - implements: ../wit/plugin.wit (buzzer-controller interface)
+//     - calls: gpio.rs (buzz, beep)
+
+impl sensor_bindings::demo::plugin::buzzer_controller::Host for HostState {
+    /// sound the buzzer for a duration
+    async fn buzz(&mut self, duration_ms: u32) {
+        tokio::task::spawn_blocking(move || {
+            gpio::buzz(duration_ms);
+        }).await.ok();
+    }
+    
+    /// beep pattern - multiple short beeps with intervals
+    async fn beep(&mut self, count: u8, duration_ms: u32, interval_ms: u32) {
+        tokio::task::spawn_blocking(move || {
+            gpio::beep(count, duration_ms, interval_ms);
+        }).await.ok();
+    }
+}
+
+// ==============================================================================
 // plugin metadata - for hot reload tracking
 // ==============================================================================
 
@@ -263,6 +327,14 @@ impl WasmRuntime {
         // add OUR gpio-provider capability
         sensor_bindings::demo::plugin::gpio_provider::add_to_linker(&mut linker, |state: &mut HostState| state)
             .context("failed to add gpio-provider")?;
+        
+        // add led-controller capability
+        sensor_bindings::demo::plugin::led_controller::add_to_linker(&mut linker, |state: &mut HostState| state)
+            .context("failed to add led-controller")?;
+        
+        // add buzzer-controller capability
+        sensor_bindings::demo::plugin::buzzer_controller::add_to_linker(&mut linker, |state: &mut HostState| state)
+            .context("failed to add buzzer-controller")?;
         
         // create wasi context
         let wasi = WasiCtxBuilder::new()

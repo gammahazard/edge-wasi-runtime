@@ -103,6 +103,135 @@ pub fn get_timestamp_ms() -> u64 {
 }
 
 // ==============================================================================
+// led control - ws2812b strip via rpi_ws281x
+// ==============================================================================
+//
+// hardware: btf lighting ws2812b strip (11 leds) on gpio 18
+//
+// why subprocess?
+//     rpi_ws281x requires root and has timing-sensitive code.
+//     using python subprocess keeps the interface simple and reliable.
+//
+// relationships:
+//     - implements: ../wit/plugin.wit (led-controller interface)
+//     - called by: runtime.rs (HostState::set_led, etc.)
+
+/// set a single led to an rgb color
+///
+/// uses rpi_ws281x via python subprocess for ws2812b control.
+pub fn set_led(index: u8, r: u8, g: u8, b: u8) {
+    use std::process::Command;
+    
+    let script = format!(
+        r#"
+from rpi_ws281x import PixelStrip, Color
+strip = PixelStrip(11, 18, brightness=50)
+strip.begin()
+strip.setPixelColor({}, Color({}, {}, {}))
+strip.show()
+"#,
+        index, r, g, b
+    );
+    
+    let _ = Command::new("sudo")
+        .args(["python3", "-c", &script])
+        .output();
+}
+
+/// set all leds to the same rgb color
+pub fn set_all_leds(r: u8, g: u8, b: u8) {
+    use std::process::Command;
+    
+    let script = format!(
+        r#"
+from rpi_ws281x import PixelStrip, Color
+strip = PixelStrip(11, 18, brightness=50)
+strip.begin()
+for i in range(11):
+    strip.setPixelColor(i, Color({}, {}, {}))
+strip.show()
+"#,
+        r, g, b
+    );
+    
+    let _ = Command::new("sudo")
+        .args(["python3", "-c", &script])
+        .output();
+}
+
+/// turn off all leds
+pub fn clear_leds() {
+    set_all_leds(0, 0, 0);
+}
+
+// ==============================================================================
+// buzzer control - piezo buzzer via sainsmart relay
+// ==============================================================================
+//
+// hardware: cyclewet buzzer connected via sainsmart relay on gpio 17
+// note: relay is ACTIVE LOW - gpio low = relay on = buzzer sounds
+//
+// why active low?
+//     sainsmart relays trigger when the input goes LOW, not HIGH.
+//     we abstract this in the host so plugins just call buzz() without
+//     knowing the hardware details.
+//
+// relationships:
+//     - implements: ../wit/plugin.wit (buzzer-controller interface)
+//     - called by: runtime.rs (HostState::buzz, etc.)
+
+/// sound the buzzer for a duration
+///
+/// handles the active-low relay logic internally.
+pub fn buzz(duration_ms: u32) {
+    use std::process::Command;
+    
+    let script = format!(
+        r#"
+import RPi.GPIO as GPIO
+import time
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(17, GPIO.OUT)
+GPIO.output(17, GPIO.LOW)  # active low - LOW = buzzer on
+time.sleep({} / 1000.0)
+GPIO.output(17, GPIO.HIGH)  # HIGH = buzzer off
+GPIO.cleanup(17)
+"#,
+        duration_ms
+    );
+    
+    let _ = Command::new("python3")
+        .args(["-c", &script])
+        .output();
+}
+
+/// beep pattern - multiple short beeps with intervals
+pub fn beep(count: u8, duration_ms: u32, interval_ms: u32) {
+    use std::process::Command;
+    
+    let script = format!(
+        r#"
+import RPi.GPIO as GPIO
+import time
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(17, GPIO.OUT)
+GPIO.output(17, GPIO.HIGH)  # start with buzzer off
+for _ in range({}):
+    GPIO.output(17, GPIO.LOW)  # buzzer on
+    time.sleep({} / 1000.0)
+    GPIO.output(17, GPIO.HIGH)  # buzzer off
+    time.sleep({} / 1000.0)
+GPIO.cleanup(17)
+"#,
+        count, duration_ms, interval_ms
+    );
+    
+    let _ = Command::new("python3")
+        .args(["-c", &script])
+        .output();
+}
+
+// ==============================================================================
 // tests
 // ==============================================================================
 #[cfg(test)]
@@ -116,10 +245,20 @@ mod tests {
         assert!(ts > 1700000000000, "timestamp should be after 2024");
     }
     
-    // note: dht22 test requires actual hardware and is not run in ci
+    // note: hardware tests require actual pi and are not run in ci
     // #[test] 
     // fn test_dht22() {
     //     let result = read_dht22(4);
     //     println!("dht22 result: {:?}", result);
+    // }
+    //
+    // #[test]
+    // fn test_led() {
+    //     set_all_leds(255, 0, 0);  // red
+    // }
+    //
+    // #[test]
+    // fn test_buzzer() {
+    //     buzz(500);  // 500ms buzz
     // }
 }

@@ -67,6 +67,73 @@ interface gpio-provider {
     get-timestamp-ms: func() -> u64;
 }
 
+// =============================================================================
+// led-controller - capability for controlling ws2812b led strip
+// =============================================================================
+//
+// hardware: btf lighting ws2812b strip (11 leds) on gpio 18
+//
+// why this interface?
+//     the wasm plugin cannot directly access gpio. instead it calls these
+//     functions and the rust host handles the actual hardware control via
+//     the rpi_ws281x library (python subprocess).
+//
+// relationships:
+//     - implemented by: host/src/gpio.rs (hardware access)
+//     - linked in: host/src/runtime.rs (HostState impl)
+//     - called by: plugins/sensor/app.py (alert logic)
+//
+interface led-controller {
+    // set a single led to an rgb color
+    //
+    // @param index: led position (0-10 for 11 leds)
+    // @param r: red component (0-255)
+    // @param g: green component (0-255)
+    // @param b: blue component (0-255)
+    set-led: func(index: u8, r: u8, g: u8, b: u8);
+    
+    // set all leds to the same rgb color
+    //
+    // @param r: red component (0-255)
+    // @param g: green component (0-255)
+    // @param b: blue component (0-255)
+    set-all: func(r: u8, g: u8, b: u8);
+    
+    // turn off all leds (set to black)
+    clear: func();
+}
+
+// =============================================================================
+// buzzer-controller - capability for controlling piezo buzzer via relay
+// =============================================================================
+//
+// hardware: cyclewet buzzer connected via sainsmart relay on gpio 17
+// note: relay is ACTIVE LOW (gpio low = relay on = buzzer sounds)
+//
+// why this interface?
+//     same as led-controller - wasm cannot access gpio directly.
+//     the host handles the active-low relay logic so plugins don't need
+//     to know the hardware details.
+//
+// relationships:
+//     - implemented by: host/src/gpio.rs (hardware access)
+//     - linked in: host/src/runtime.rs (HostState impl)
+//     - called by: plugins/sensor/app.py (alert logic)
+//
+interface buzzer-controller {
+    // sound the buzzer for a duration
+    //
+    // @param duration-ms: how long to buzz in milliseconds
+    buzz: func(duration-ms: u32);
+    
+    // beep pattern: multiple short beeps with intervals
+    //
+    // @param count: number of beeps
+    // @param duration-ms: length of each beep in milliseconds
+    // @param interval-ms: pause between beeps in milliseconds
+    beep: func(count: u8, duration-ms: u32, interval-ms: u32);
+}
+
 interface sensor-logic {
     record sensor-reading {
         sensor-id: string,
@@ -88,6 +155,8 @@ interface dashboard-logic {
 
 world sensor-plugin {
     import gpio-provider;
+    import led-controller;
+    import buzzer-controller;
     export sensor-logic;
 }
 
