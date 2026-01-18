@@ -171,6 +171,35 @@ strip.show()
         .output();
 }
 
+/// set led 0 and led 1 atomically (avoids flicker)
+///
+/// this sets both leds in a single subprocess call, ensuring they're
+/// both visible at the same time. all other leds are turned off.
+pub fn set_two_leds(r0: u8, g0: u8, b0: u8, r1: u8, g1: u8, b1: u8) {
+    use std::process::Command;
+    
+    let script = format!(
+        r#"
+from rpi_ws281x import PixelStrip, Color
+strip = PixelStrip(11, 18, brightness=50)
+strip.begin()
+# set led 0 (cpu temp)
+strip.setPixelColor(0, Color({}, {}, {}))
+# set led 1 (room temp)
+strip.setPixelColor(1, Color({}, {}, {}))
+# turn off the rest
+for i in range(2, 11):
+    strip.setPixelColor(i, Color(0, 0, 0))
+strip.show()
+"#,
+        r0, g0, b0, r1, g1, b1
+    );
+    
+    let _ = Command::new("sudo")
+        .args(["python3", "-c", &script])
+        .output();
+}
+
 /// turn off all leds
 pub fn clear_leds() {
     set_all_leds(0, 0, 0);

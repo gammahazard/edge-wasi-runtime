@@ -139,6 +139,13 @@ impl sensor_bindings::demo::plugin::led_controller::Host for HostState {
         }).await.ok();
     }
     
+    /// set led 0 and led 1 atomically (avoids flicker)
+    async fn set_two(&mut self, r0: u8, g0: u8, b0: u8, r1: u8, g1: u8, b1: u8) {
+        tokio::task::spawn_blocking(move || {
+            gpio::set_two_leds(r0, g0, b0, r1, g1, b1);
+        }).await.ok();
+    }
+    
     /// turn off all leds
     async fn clear(&mut self) {
         tokio::task::spawn_blocking(move || {
