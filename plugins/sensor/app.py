@@ -100,40 +100,53 @@ class SensorLogic(SensorLogic):
                 temperature, humidity = result
             else:
                 print(f"⚠️ dht22 read error: {result}")
-                led_controller.set_all(255, 255, 0)  # yellow = sensor error
                 return []
                 
         except Exception as e:
             print(f"⚠️ dht22 exception: {e}")
-            led_controller.set_all(255, 255, 0)  # yellow = sensor error
             return []
         
         # ======================================================================
-        # alert logic - THIS IS HOT-SWAPPABLE!
+        # turn off unused leds (2-10) to save power
         # ======================================================================
-        # change these conditions, rebuild wasm, and host auto-reloads
+        for i in range(2, 11):
+            led_controller.set_led(i, 0, 0, 0)
+        
+        # ======================================================================
+        # cpu temperature indicator - LED 0
+        # ======================================================================
+        # first led shows pi cpu health
+        cpu_temp = gpio_provider.get_cpu_temp()
+        
+        if cpu_temp > 70.0:
+            led_controller.set_led(0, 255, 0, 0)  # red = hot cpu
+        elif cpu_temp > 50.0:
+            led_controller.set_led(0, 255, 255, 0)  # yellow = warm cpu
+        else:
+            led_controller.set_led(0, 0, 255, 0)  # green = cool cpu
+        
+        # ======================================================================
+        # room temperature indicator - LED 1
+        # ======================================================================
+        # second led shows dht22 sensor reading
         
         if temperature > TEMP_HIGH:
-            # hot! red leds + 3 quick beeps
-            led_controller.set_all(255, 0, 0)
+            led_controller.set_led(1, 255, 0, 0)  # red = hot room
             buzzer_controller.beep(3, 100, 100)
-            print(f"🔴 [ALERT] HIGH TEMP: {temperature:.1f}C")
+            print(f"🔴 [ALERT] HIGH TEMP: {temperature:.1f}C (CPU: {cpu_temp:.1f}C)")
             
         elif temperature < TEMP_LOW:
-            # cold! blue leds (no buzzer)
-            led_controller.set_all(0, 0, 255)
-            print(f"🔵 [COLD] {temperature:.1f}C")
+            led_controller.set_led(1, 0, 0, 255)  # blue = cold room
+            print(f"🔵 [COLD] {temperature:.1f}C (CPU: {cpu_temp:.1f}C)")
             
         elif humidity > HUMIDITY_HIGH:
-            # humid! cyan leds + 2 beeps
-            led_controller.set_all(0, 255, 255)
+            led_controller.set_led(1, 0, 255, 255)  # cyan = humid
             buzzer_controller.beep(2, 150, 200)
-            print(f"💧 [HUMID] {humidity:.1f}%")
+            print(f"💧 [HUMID] {humidity:.1f}% (CPU: {cpu_temp:.1f}C)")
             
         else:
-            # normal - green leds
-            led_controller.set_all(0, 255, 0)
-            print(f"🟢 [OK] {temperature:.1f}C, {humidity:.1f}%")
+            led_controller.set_led(1, 0, 255, 0)  # green = normal
+            print(f"🟢 [OK] {temperature:.1f}C, {humidity:.1f}% (CPU: {cpu_temp:.1f}C)")
         
         # create sensor reading
         reading = SensorReading(
