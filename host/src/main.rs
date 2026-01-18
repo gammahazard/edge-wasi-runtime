@@ -294,7 +294,7 @@ struct BuzzerParams {
 }
 
 /// buzzer control endpoint
-/// POST /api/buzzer?action=beep|beep3|toggle
+/// POST /api/buzzer?action=beep|beep3|long
 async fn buzzer_handler(
     Query(params): Query<BuzzerParams>,
 ) -> Json<serde_json::Value> {
@@ -306,6 +306,10 @@ async fn buzzer_handler(
         "beep3" => {
             tokio::task::spawn_blocking(|| gpio::beep(3, 100, 100));
             Json(serde_json::json!({"status": "ok", "action": "beep3"}))
+        }
+        "long" => {
+            tokio::task::spawn_blocking(|| gpio::buzz(5000));  // 5 second beep
+            Json(serde_json::json!({"status": "ok", "action": "long"}))
         }
         _ => {
             Json(serde_json::json!({"status": "error", "message": "unknown action"}))
