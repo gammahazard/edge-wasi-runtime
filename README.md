@@ -6,6 +6,8 @@
 ![Raspberry Pi](https://img.shields.io/badge/-Raspberry_Pi-C51A4A?style=for-the-badge&logo=Raspberry-Pi)
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
 
+![Dashboard Preview](screenshots/dashboard-full.png)
+
 A reference implementation demonstrating **Python WASM modules** reading **real DHT22 sensor data** on a Raspberry Pi, using the **WASI Component Model** with a Rust host.
 
 ## The Key Demonstration
@@ -109,7 +111,10 @@ We have captured the following capabilities in action:
 #### 1. Dashboard Hot Swap (Terminal/CRT Theme)
 [![Watch Dashboard Demo](https://img.shields.io/badge/Watch_Visual_Update-Streamable-33ff33?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/klbojw)
 
-#### 2. Sensor Hot Swap (Logic Update)
+#### 2. Manual Controls (Buzzer & CPU Temp)
+Dashboard includes **CPU Temp** and **Buzzer buttons** (Beep/Long Beep) to show bi-directional control.
+
+#### 3. Sensor Hot Swap (Logic Update)
 [![Watch Sensor Demo](https://img.shields.io/badge/Watch_Logic_Update-Streamable-00aaff?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/cd3050)
 
 > **Key Takeaway**: The Rust host acts as a stable "Operating System", dealing with GPIO and networking, while the Python guests provide flexible, hot-reloadable "User Space" logic.

@@ -34,7 +34,13 @@ Look at the LED strip - two LEDs are lit:
 *   **LED 1 (Green/Red/Blue)**: Room temperature status
 *   **Talking Point**: The Python WASM plugin *cannot* directly control GPIOs. It calls `led_controller.set_two()` which the host implements. This is capability-based security.
 
-### 4. Hot Reload (The Magic Trick)
+### 4. Manual Dashboard Controls (New!)
+On the dashboard, you can now see the **CPU Temperature** and **Buzzer Controls**.
+1.  Click **"BEEP ONCE"** - Listen for the short beep.
+2.  Click **"LONG BEEP (5s)"** - Listen for the extended beep.
+*   **Talking Point**: This demonstrates bi-directional communication. The browser sends a POST request to the Rust host (`/api/buzzer`), which triggers the hardware capability.
+
+### 5. Hot Reload (The Magic Trick)
 1.  Open `plugins/sensor/app.py`.
 2.  Change `TEMP_HIGH = 30.0` to `TEMP_HIGH = 20.0`.
 3.  Rebuild the WASM: `componentize-py ...`
