@@ -107,46 +107,48 @@ class SensorLogic(SensorLogic):
             return []
         
         # ======================================================================
-        # turn off unused leds (2-10) to save power
+        # determine led colors
         # ======================================================================
-        for i in range(2, 11):
-            led_controller.set_led(i, 0, 0, 0)
+        # we compute colors first, then set both leds atomically to avoid flicker
         
-        # ======================================================================
-        # cpu temperature indicator - LED 0
-        # ======================================================================
-        # first led shows pi cpu health
+        # cpu temperature -> led 0 color
         cpu_temp = gpio_provider.get_cpu_temp()
         
         if cpu_temp > 70.0:
-            led_controller.set_led(0, 255, 0, 0)  # red = hot cpu
+            cpu_color = (255, 0, 0)  # red = hot cpu
         elif cpu_temp > 50.0:
-            led_controller.set_led(0, 255, 255, 0)  # yellow = warm cpu
+            cpu_color = (255, 255, 0)  # yellow = warm cpu
         else:
-            led_controller.set_led(0, 0, 255, 0)  # green = cool cpu
+            cpu_color = (0, 255, 0)  # green = cool cpu
         
-        # ======================================================================
-        # room temperature indicator - LED 1
-        # ======================================================================
-        # second led shows dht22 sensor reading
-        
+        # room temperature/humidity -> led 1 color + buzzer
         if temperature > TEMP_HIGH:
-            led_controller.set_led(1, 255, 0, 0)  # red = hot room
+            room_color = (255, 0, 0)  # red = hot room
             buzzer_controller.beep(3, 100, 100)
-            print(f"🔴 [ALERT] HIGH TEMP: {temperature:.1f}C (CPU: {cpu_temp:.1f}C)")
+            status = f"🔴 [ALERT] HIGH TEMP: {temperature:.1f}C (CPU: {cpu_temp:.1f}C)"
             
         elif temperature < TEMP_LOW:
-            led_controller.set_led(1, 0, 0, 255)  # blue = cold room
-            print(f"🔵 [COLD] {temperature:.1f}C (CPU: {cpu_temp:.1f}C)")
+            room_color = (0, 0, 255)  # blue = cold room
+            status = f"🔵 [COLD] {temperature:.1f}C (CPU: {cpu_temp:.1f}C)"
             
         elif humidity > HUMIDITY_HIGH:
-            led_controller.set_led(1, 0, 255, 255)  # cyan = humid
+            room_color = (0, 255, 255)  # cyan = humid
             buzzer_controller.beep(2, 150, 200)
-            print(f"💧 [HUMID] {humidity:.1f}% (CPU: {cpu_temp:.1f}C)")
+            status = f"💧 [HUMID] {humidity:.1f}% (CPU: {cpu_temp:.1f}C)"
             
         else:
-            led_controller.set_led(1, 0, 255, 0)  # green = normal
-            print(f"🟢 [OK] {temperature:.1f}C, {humidity:.1f}% (CPU: {cpu_temp:.1f}C)")
+            room_color = (0, 255, 0)  # green = normal
+            status = f"🟢 [OK] {temperature:.1f}C, {humidity:.1f}% (CPU: {cpu_temp:.1f}C)"
+        
+        # ======================================================================
+        # set both leds atomically (avoids flicker)
+        # ======================================================================
+        led_controller.set_two(
+            cpu_color[0], cpu_color[1], cpu_color[2],
+            room_color[0], room_color[1], room_color[2]
+        )
+        
+        print(status)
         
         # create sensor reading
         reading = SensorReading(
