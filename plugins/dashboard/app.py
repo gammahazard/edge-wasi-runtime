@@ -462,6 +462,7 @@ class DashboardLogic(DashboardLogic):
         <h2>>> BUZZER CONTROL</h2>
         <button class="btn" onclick="buzzerAction('beep')">BEEP ONCE</button>
         <button class="btn" onclick="buzzerAction('beep3')">3 BEEPS</button>
+        <button class="btn" onclick="buzzerAction('long')">LONG BEEP (5s)</button>
     </section>
     
     <script>
