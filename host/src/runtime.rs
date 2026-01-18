@@ -173,6 +173,13 @@ impl sensor_bindings::demo::plugin::led_controller::Host for HostState {
             gpio::clear_leds();
         }).await.ok();
     }
+
+    /// flush memory buffer to hardware
+    async fn sync_leds(&mut self) {
+        tokio::task::spawn_blocking(move || {
+            gpio::sync_leds();
+        }).await.ok();
+    }
 }
 
 // ==============================================================================
@@ -443,6 +450,7 @@ impl WasmRuntime {
             humidity: r.humidity,
             pressure: None,        // DHT22 has no pressure
             gas_resistance: None,  // DHT22 has no gas sensor
+            iaq_score: None,       // DHT22 has no IAQ sensor
             timestamp_ms: r.timestamp_ms,
         }).collect())
     }
@@ -466,12 +474,13 @@ impl WasmRuntime {
             humidity: r.humidity,
             pressure: Some(r.pressure),
             gas_resistance: Some(r.gas_resistance),
+            iaq_score: Some(r.iaq_score),
             timestamp_ms: r.timestamp_ms,
         }).collect())
     }
     
     /// render dashboard html using the python wasm plugin
-    pub async fn render_dashboard(&self, dht_temp: f32, dht_hum: f32, bme_temp: f32, bme_hum: f32, cpu_temp: f32, pressure: f32, gas: f32) -> Result<String> {
+    pub async fn render_dashboard(&self, dht_temp: f32, dht_hum: f32, bme_temp: f32, bme_hum: f32, cpu_temp: f32, pressure: f32, gas: f32, iaq: u16) -> Result<String> {
         self.check_hot_reload().await;
         
         let mut guard = self.dashboard_plugin.lock().await;
@@ -479,7 +488,7 @@ impl WasmRuntime {
             .ok_or_else(|| anyhow!("dashboard plugin not loaded"))?;
         
         let html = plugin.instance.demo_plugin_dashboard_logic()
-            .call_render(&mut plugin.store, dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas)
+            .call_render(&mut plugin.store, dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas, iaq)
             .await
             .context("dashboard render() failed")?;
         
@@ -531,6 +540,14 @@ impl bme680_bindings::demo::plugin::led_controller::Host for HostState {
     }
     
     async fn clear(&mut self) {
-        tokio::task::spawn_blocking(move || gpio::clear_leds()).await.ok();
+        tokio::task::spawn_blocking(move || {
+            gpio::clear_leds();
+        }).await.ok();
+    }
+
+    async fn sync_leds(&mut self) {
+        tokio::task::spawn_blocking(move || {
+            gpio::sync_leds();
+        }).await.ok();
     }
 }

@@ -8,7 +8,7 @@
 
 ![Dashboard Preview](screenshots/dashboard-full.png)
 
-A reference implementation demonstrating **Python WASM modules** reading **real DHT22 sensor data** on a Raspberry Pi, using the **WASI Component Model** with a Rust host.
+A reference implementation demonstrating **Python WASM modules** reading **real sensor data** (DHT22, BME680) on a Raspberry Pi, using the **WASI Component Model** with a Rust host.
 
 ## The Key Demonstration
 
@@ -23,15 +23,13 @@ This project shows the **WASI capability model** in action.
 │   │  Host Capabilities (Rust Implements)                 │   │
 │   │  • gpio-provider:                                    │   │
 │   │      read_dht22(pin) → (temp, humidity)             │   │
+│   │      read_bme680(addr) → (temp, hum, pres, gas)     │   │
 │   │      get_cpu_temp() → celsius                        │   │
 │   │      get_timestamp_ms() → unix timestamp             │   │
 │   │  • led-controller:                                   │   │
-│   │      set_led(index, r, g, b)                         │   │
-│   │      set_all(r, g, b)                                │   │
-│   │      set_two(led0_rgb, led1_rgb) ← atomic update    │   │
+│   │      set_led / set_two / sync_leds (buffered)       │   │
 │   │  • buzzer-controller:                                │   │
-│   │      buzz(duration_ms)                               │   │
-│   │      beep(count, duration_ms, interval_ms)          │   │
+│   │      buzz(duration_ms) / beep(count, dur, interval) │   │
 │   └────────────────────────┬─────────────────────────────┘   │
 │                            │                                  │
 │   ┌────────────────────────┼─────────────────────────────┐   │
@@ -45,10 +43,10 @@ This project shows the **WASI capability model** in action.
 │   └──────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
                             ↓
-    ┌───────────────┐  ┌───────────────┐  ┌───────────────┐
-    │  DHT22 Sensor │  │  LED Strip    │  │  Buzzer       │
-    │  (GPIO 4)     │  │  (GPIO 18)    │  │  (GPIO 17)    │
-    └───────────────┘  └───────────────┘  └───────────────┘
+    ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐
+    │  DHT22 Sensor │  │  BME680 Sensor│  │  LED Strip    │  │  Buzzer       │
+    │  (GPIO 4)     │  │  (I2C 0x77)   │  │  (GPIO 18)    │  │  (GPIO 17)    │
+    └───────────────┘  └───────────────┘  └───────────────┘  └───────────────┘
 ```
 
 **The sandboxed Python WASM plugin CANNOT directly access GPIO.**  
@@ -140,8 +138,18 @@ curl http://raspberry-pi:3000/api
 {
   "readings": [
     {
+      "sensor_id": "dht22-gpio-4",
       "temperature": 21.5,
       "humidity": 40.9,
+      "timestamp_ms": 1737073200000
+    },
+    {
+      "sensor_id": "bme680-i2c-0x77",
+      "temperature": 22.1,
+      "humidity": 38.5,
+      "pressure": 1013.2,
+      "gas_resistance": 150.5,
+      "iaq_score": 35,
       "timestamp_ms": 1737073200000
     }
   ],
@@ -172,7 +180,7 @@ To run this demo, you need:
     *   **SDA** → GPIO 2 (Pin 3)
     *   **SCL** → GPIO 3 (Pin 5)
 
-> **Why GPIO 4?** The host is hardcoded to use BCM GPIO 4 (Physical Pin 7) for simplicity in this demo.
+> **Configuration**: GPIO pins and poll intervals are set in `config/host.toml`. Edit this file to change behavior without recompiling.
 
 ## 💡 Why This Architecture Matters
 
@@ -181,10 +189,10 @@ To run this demo, you need:
 If your *only* goal is to read a sensor, a 5-line Python script is better. But this project demonstrates an architecture for **Secure, Multi-Tenant Edge Computing**.
 
 **Why use this architecture?**
-1.  **Security Isolation**: The Python code runs in a sandbox. If you download a plugin from the internet, it physically cannot hack your network or access files unless you explicitly grant that capability in `plugin.wit`.
-2.  **Resilience**: If the Python plugin crashes or hangs (e.g., bad sensor read), the Rust host survives. We implemented a "Dead Man's Switch" in `gpio.rs` so a stuck plugin never freezes the device.
-3.  **Hot Swapping**: You can update the business logic (Python) over-the-air without rebooting the system or dropping active network connections.
-4.  **Polyglot**: You can mix and match languages. One plugin can be Python (for data science), another Rust (for speed), another JavaScript.
+1.  **Security Isolation**: The Python code runs in a sandbox. It cannot access files or network unless you explicitly grant that capability in `plugin.wit`.
+2.  **Resilience**: If the Python plugin returns an error, the Rust host logs it and continues. The system doesn't crash.
+3.  **Hot Swapping**: You can update the business logic (Python) by rebuilding the WASM file. The host detects the change and reloads automatically.
+4.  **Configuration-Driven**: Runtime settings (poll interval, GPIO pins) are in `config/host.toml`, not hardcoded.
 
 ## 🏗️ Migration Strategy (How to use this as a model)
 
@@ -222,15 +230,11 @@ Don't rewrite everything at once. Use the **Strangler Fig Pattern**:
 ### Build & Run
 
 ```bash
-# 1. Build Python plugins to WASM
-cd plugins/sensor
-componentize-py -d ../../wit -w sensor-plugin componentize app -o sensor.wasm
-
-cd ../dashboard
-componentize-py -d ../../wit -w dashboard-plugin componentize app -o dashboard.wasm
+# 1. Build Python plugins to WASM (uses scripts/build-plugins.sh)
+bash scripts/build-plugins.sh
 
 # 2. Build and run the Rust host
-cd ../../host
+cd host
 cargo run --release
 
 # 3. Open http://raspberry-pi-ip:3000 in browser
@@ -294,16 +298,13 @@ impl gpio_provider::Host for HostState {
 }
 ```
 
-## Industry Context
+This architecture is inspired by patterns used in production systems like:
 
-This architecture is used in production by:
-
-| Company | Use Case |
+| Project | Use Case |
 |---------|----------|
-| **Fermyon Spin** | Serverless Python with capability-based security |
+| **Fermyon Spin** | Serverless functions with capability-based security |
 | **wasmCloud** | Distributed IoT/edge actors with sandboxed plugins |
-| **Shopify** | Sandboxed merchant scripts |
-| **Siemens** | IoT edge computing with isolated sensor modules |
+| **Shopify Functions** | Sandboxed merchant logic |
 
 ## Hot Reload Demo
 

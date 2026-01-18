@@ -66,7 +66,7 @@ class DashboardLogic(DashboardLogic):
         def render(self, temperature: float, humidity: float, cpu_temp: float, pressure: float, gas: float) -> str
     """
     
-    def render(self, dht_temp: float, dht_hum: float, bme_temp: float, bme_hum: float, cpu_temp: float, pressure: float, gas: float) -> str:
+    def render(self, dht_temp: float, dht_hum: float, bme_temp: float, bme_hum: float, cpu_temp: float, pressure: float, gas: float, iaq: int) -> str:
         """
         render a complete html dashboard page with comparison layout.
         """
@@ -98,19 +98,29 @@ class DashboardLogic(DashboardLogic):
         pres_display = f"{pressure:.1f} hPa" if pressure > 0 else "N/A"
         gas_display = f"{gas:.1f} KΩ" if gas > 0 else "N/A"
         
-        # simple air quality heuristic based on gas resistance
-        aq_status = "UNKNOWN"
+        # IAQ (Indoor Air Quality) Score Logic
+        aq_status = "STABILIZING..."
         aq_class = "reading"
-        if gas > 0:
-            if gas > 50:
+        
+        if iaq > 0:
+            if iaq <= 50:
+                aq_status = "EXCELLENT"
+                aq_class += " safe"
+            elif iaq <= 100:
                 aq_status = "GOOD"
                 aq_class += " safe"
-            elif gas < 10:
-                aq_status = "BAD"
-                aq_class += " danger"
-            else:
+            elif iaq <= 150:
                 aq_status = "MODERATE"
                 aq_class += " warning"
+            elif iaq <= 200:
+                aq_status = "POOR"
+                aq_class += " danger"
+            else:
+                aq_status = "HEAVILY POLLUTED"
+                aq_class += " danger"
+        elif gas > 0:
+            aq_status = "CALIBRATING..."
+            aq_class += " warning"
         
         html = f"""<!doctype html>
 <html lang="en">
@@ -249,6 +259,17 @@ class DashboardLogic(DashboardLogic):
                     document.getElementById('bme-hum').textContent = bme.humidity.toFixed(1);
                     document.getElementById('pres').textContent = bme.pressure.toFixed(1) + " hPa";
                     document.getElementById('gas').textContent = bme.gas_resistance.toFixed(1) + " KΩ";
+                    if (bme.iaq_score) {{
+                        document.getElementById('iaq-val').textContent = bme.iaq_score;
+                        // Basic status update logic mirrored in JS for 0-refresh feel
+                        let status = "STABILIZING...";
+                        if (bme.iaq_score <= 50) status = "EXCELLENT";
+                        else if (bme.iaq_score <= 100) status = "GOOD";
+                        else if (bme.iaq_score <= 150) status = "MODERATE";
+                        else if (bme.iaq_score <= 200) status = "POOR";
+                        else status = "HEAVILY POLLUTED";
+                        document.getElementById('aq-status').textContent = "STATUS: " + status;
+                    }}
                 }}
             }} catch (e) {{ console.error(e); }}
         }}
@@ -312,10 +333,11 @@ class DashboardLogic(DashboardLogic):
             <div id="pres" class="reading-val" style="font-size: 2rem;">{pres_display}</div>
         </article>
         
-        <article class="card">
+    <article class="card">
             <header class="card-header">AIR QUALITY</header>
-            <div id="gas" class="{aq_class} reading-val" style="font-size: 2rem;">{gas_display}</div>
-            <div style="margin-top:10px;">STATUS: {aq_status}</div>
+            <div id="gas" class="reading-val" style="font-size: 1.5rem; color: var(--text-secondary);">{gas_display} <span style="font-size: 0.8rem; vertical-align: middle;">(RAW)</span></div>
+            <div id="iaq-val" class="{aq_class} reading-val" style="font-size: 3rem;">{iaq}</div>
+            <div id="aq-status" style="margin-top:10px;">STATUS: {aq_status}</div>
         </article>
     </div>
 

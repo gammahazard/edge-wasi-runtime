@@ -4,70 +4,84 @@ This document explains the internal mechanics of the **Stateful WASM Host**. It 
 
 ## The Component Model (WIT)
 
-The core is the **WebAssembly Component Model**. Unlike traditional linking, components communicate via high-level, typed interfaces defined in WIT (Wasm Interface Type) files.
+The core is the **WebAssembly Component Model**. Components communicate via high-level, typed interfaces defined in WIT (Wasm Interface Type) files.
 
 ### The Contract (`plugin.wit`)
 The `.wit` file is the source of truth. It defines:
-1.  **Imports**: Capabilities the Host *gives* to the Guest (e.g., `gpio-provider`).
-2.  **Exports**: Functions the Guest *provides* to the Host (e.g., `sensor-logic.poll`).
+1.  **Imports**: Capabilities the Host *gives* to the Guest (e.g., `gpio-provider`, `led-controller`).
+2.  **Exports**: Functions the Guest *provides* to the Host (e.g., `sensor-logic.poll`, `bme680-logic.poll`).
+
+### Current Plugins
+| Plugin | World | Role |
+|--------|-------|------|
+| `sensor` | `sensor-plugin` | Reads DHT22, controls LED 0-1, handles temperature alarms |
+| `bme680` | `bme680-plugin` | Reads BME680, calculates IAQ score, controls LED 2 |
+| `dashboard` | `dashboard-plugin` | Renders HTML dashboard (pure templating, no hardware access) |
+
+## Configuration (`config/host.toml`)
+
+Runtime settings are externalized to a TOML file. This allows behavior changes without recompiling the Rust host:
+
+```toml
+[polling]
+interval_seconds = 5
+
+[sensors.dht22]
+gpio_pin = 4
+
+[sensors.bme680]
+i2c_address = "0x77"
+
+[logging]
+level = "info"
+show_sensor_data = true
+```
 
 ## Runtime Lifecycle
 
 ### 1. Initialization (`WasmRuntime::new`)
-*   The Rust host initializes a `wasmtime::Engine`.
+*   The Rust host loads `config/host.toml`.
+*   It initializes a `wasmtime::Engine`.
 *   It loads `.wasm` files from disk.
 *   It creates a **Linker** and links the host's `HostState` (which implements capabilities).
-*   **Key Innovation**: It instantiates the Python interpreter inside WASM *once* and stores the `Store` and `Instance` in a `PluginState` struct.
+*   It instantiates each plugin *once* and stores the `Store` and `Instance` in a `PluginState` struct.
 
 ### 2. State Persistence
-In earlier versions, we re-instantiated the plugin every poll cycle. This was safe but stateless—Python global variables were reset every 5 seconds.
-
-**Current Architecture (Stateful):**
 *   The `Store` (memory) and `Instance` (execution context) are kept alive in `Arc<Mutex<PluginState>>`.
 *   When `poll()` is called, we reuse the *existing* instance.
-*   **Benefit**: Python global variables (e.g., `high_alarm_active`) persist forever (until reload). This enables sticky logic like **Alarm Hysteresis**.
+*   **Benefit**: Python global variables (e.g., `gas_baseline`, `high_alarm_active`) persist between poll cycles. This enables features like IAQ calibration and alarm hysteresis.
 
 ### 3. Hot Reloading (`check_hot_reload`)
-Before every poll, the host checks the file modification time of the `.wasm` file.
-*   **If changed**:
-    1.  The host locks the plugin mutex.
-    2.  It loads the new `.wasm` bytes.
-    3.  It creates a *new* `Store` and `Instance`.
-    4.  It replaces the old `PluginState` with the new one.
-*   **Result**: The next poll uses the new logic. The old state is dropped (garbage collected).
+Before every poll, the host checks the file modification time of each `.wasm` file.
+*   **If changed**: The host loads the new WASM, creates a new Store/Instance, and replaces the old state.
+*   **Result**: The next poll uses the new logic. State is reset.
+
+## Data Flow (Single Poll Cycle)
+
+1.  **Poll Loop** (Rust) triggers based on `config.polling.interval_seconds`.
+2.  Calls `runtime.poll_sensors()` → DHT22 plugin.
+3.  Calls `runtime.poll_bme680()` → BME680 plugin.
+4.  Each plugin updates the **LED buffer** via `led_controller.set_led()`.
+5.  **Host calls `gpio::sync_leds()`** once after all plugins finish → Single hardware write.
+6.  Host updates shared `AppState` with all readings.
+7.  Host logs sensor data if `show_sensor_data = true`.
 
 ## Concurrency Model
 
-The host runs on **Tokio**, an async runtime for Rust.
+The host runs on **Tokio**, an async runtime for Rust. We use `tokio::sync::Mutex` for plugin state because standard `std::sync::Mutex` cannot be held across `.await` points.
 
-### The Mutex Challenge
-Standard `std::sync::Mutex` locks cannot be held across `.await` points because they are not `Send` (they are tied to a specific OS thread).
-Since our WASM execution matches the async nature of the host (potentially waiting on I/O), we use `tokio::sync::Mutex`.
+Hardware I/O (DHT22, BME680, LEDs) is offloaded to blocking threads via `tokio::task::spawn_blocking()` to avoid blocking the async runtime.
 
-*   **Flow**:
-    ```rust
-    // runtime.rs
-    let mut guard = self.sensor_plugin.lock().await; // Async wait for lock
-    let result = guard.instance.call_poll(...).await; // Run WASM
-    ```
-*   This ensures the web server and polling loop can access plugins concurrently without blocking the entire system.
+## LED Buffer Architecture
 
-## Data Flow
-
-1.  **Poll Loop** (Rust) triggers every 5s.
-2.  Calls `runtime.poll_sensors()`.
-3.  Runtime enters WASM Sandbox (Python).
-4.  Python calls `gpio_provider.read_dht22()`.
-5.  Runtime exits WASM, executes Rust `gpio::read_dht22` (via `spawn_blocking` to avoid blocking async runtime).
-6.  Rust returns tuple `(temp, hum)` to Python.
-7.  Python processes logic (Hysteresis, coloring).
-8.  Python calls `led_controller.set_two()`.
-9.  Host updates physical LEDs.
-10. Python returns `SensorReading` list to Host.
-11. Host updates shared `AppState`.
+To prevent flicker from multiple plugins updating LEDs:
+1.  Plugins call `set_led()` / `set_two()` which updates an in-memory buffer only.
+2.  After all plugins finish, the Host calls `sync_leds()` which writes the entire buffer to hardware once.
+3.  This ensures atomic LED updates regardless of how many plugins are active.
 
 ## Security
 
-*   **Sandboxing**: The Python code cannot open files or sockets. It can *only* call functions imported from `plugin.wit`.
-*   **Resource Limits**: Wasmtime limits CPU and Memory usage per instance (configurable).
-*   **Isolation**: If the Python plugin panics, it returns a Rust `Err`, which we catch and log. The Host continues running.
+*   **Sandboxing**: Python code cannot open files or sockets. It can *only* call functions imported via `plugin.wit`.
+*   **Capability-Based**: Each plugin world declares exactly which host functions it can access. The dashboard plugin has no hardware access.
+*   **Isolation**: If a Python plugin returns an error, the Host logs it and continues. The system doesn't crash.
+
