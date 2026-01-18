@@ -29,9 +29,10 @@ use anyhow::{Result, Context, anyhow};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // ==============================================================================
 // bindgen - generate rust bindings from wit
@@ -58,6 +59,15 @@ mod dashboard_bindings {
     });
 }
 use dashboard_bindings::DashboardPlugin;
+
+mod bme680_bindings {
+    wasmtime::component::bindgen!({
+        path: "../wit",
+        world: "bme680-plugin",
+        async: true,
+    });
+}
+use bme680_bindings::Bme680Plugin;
 
 // ==============================================================================
 // host state - provides capabilities to wasm guests
@@ -107,6 +117,17 @@ impl sensor_bindings::demo::plugin::gpio_provider::Host for HostState {
     /// get cpu temperature - called by python wasm plugin
     async fn get_cpu_temp(&mut self) -> f32 {
         gpio::get_cpu_temp()
+    }
+    
+    /// read bme680 sensor via i2c - called by python wasm plugin
+    async fn read_bme680(&mut self, i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+        // offload blocking io
+        tokio::task::spawn_blocking(move || {
+            gpio::read_bme680(i2c_addr)
+        })
+        .await
+        .map_err(|e| format!("task join error: {}", e))?
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -185,24 +206,15 @@ impl sensor_bindings::demo::plugin::buzzer_controller::Host for HostState {
 // plugin metadata - for hot reload tracking
 // ==============================================================================
 
-pub struct PluginState {
-    component: Component,
+pub struct PluginState<T> {
+    // component: Component, // unused
     path: PathBuf,
     last_modified: SystemTime,
+    store: Store<HostState>,
+    instance: T,
 }
 
-impl PluginState {
-    fn load(engine: &Engine, path: &Path) -> Result<Self> {
-        let metadata = std::fs::metadata(path)
-            .with_context(|| format!("failed to read {:?}", path))?;
-        let last_modified = metadata.modified()
-            .with_context(|| format!("failed to get mtime for {:?}", path))?;
-        let component = Component::from_file(engine, path)
-            .with_context(|| format!("failed to compile {:?}", path))?;
-        
-        Ok(Self { component, path: path.to_path_buf(), last_modified })
-    }
-    
+impl<T> PluginState<T> {
     fn needs_reload(&self) -> bool {
         std::fs::metadata(&self.path)
             .and_then(|m| m.modified())
@@ -219,204 +231,306 @@ impl PluginState {
 pub struct WasmRuntime {
     engine: Engine,
     // Shared state via Arc<Mutex> to allow cloning WasmRuntime
-    sensor_plugin: Arc<Mutex<Option<PluginState>>>,
-    dashboard_plugin: Arc<Mutex<Option<PluginState>>>,
-    sensor_path: PathBuf,
-    dashboard_path: PathBuf,
+    sensor_plugin: Arc<Mutex<Option<PluginState<SensorPlugin>>>>,
+    dashboard_plugin: Arc<Mutex<Option<PluginState<DashboardPlugin>>>>,
+    bme680_plugin: Arc<Mutex<Option<PluginState<Bme680Plugin>>>>,
 }
 
 impl WasmRuntime {
     /// create a new wasm runtime and load available plugins
-    pub fn new() -> Result<Self> {
+    pub async fn new(path: PathBuf) -> Result<Self> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.async_support(true);
-        
-        let engine = Engine::new(&config)
-            .context("failed to create wasmtime engine")?;
-        
-        let sensor_path = PathBuf::from("../plugins/sensor/sensor.wasm");
-        let dashboard_path = PathBuf::from("../plugins/dashboard/dashboard.wasm");
-        
-        // Initial load
-        let sensor_plugin = match PluginState::load(&engine, &sensor_path) {
-            Ok(p) => {
-                println!("[OK] Loaded sensor plugin: {:?}", sensor_path);
-                Some(p)
-            }
-            Err(e) => {
-                println!("[WARN] Sensor plugin not available: {:#}", e);
-                None
-            }
+        let engine = Engine::new(&config)?;
+
+        // --- Helper to init state ---
+        let create_host_state = || {
+             let wasi = WasiCtxBuilder::new().inherit_stdio().build();
+             HostState { ctx: wasi, table: ResourceTable::new() }
         };
+
+        // 1. SENSORPlugin
+        println!("[DEBUG] Loading sensor plugin...");
+        let sensor_path = path.join("plugins/sensor/sensor.wasm");
+        let sensor_component = Component::from_file(&engine, &sensor_path)
+            .context("failed to load sensor.wasm")?;
         
-        let dashboard_plugin = match PluginState::load(&engine, &dashboard_path) {
-            Ok(p) => {
-                println!("[OK] Loaded dashboard plugin: {:?}", dashboard_path);
-                Some(p)
-            }
-            Err(e) => {
-                println!("[WARN] Dashboard plugin not available: {:#}", e);
-                None
-            }
-        };
+        let mut linker = Linker::new(&engine);
+        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        sensor_bindings::SensorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
         
-        Ok(Self { 
-            engine, 
-            sensor_plugin: Arc::new(Mutex::new(sensor_plugin)), 
-            dashboard_plugin: Arc::new(Mutex::new(dashboard_plugin)),
-            sensor_path,
-            dashboard_path,
+        let mut store = Store::new(&engine, create_host_state());
+        let sensor_instance = SensorPlugin::instantiate_async(&mut store, &sensor_component, &linker).await
+            .context("failed to instantiate sensor plugin")?;
+        println!("[DEBUG] Loaded sensor plugin.");
+
+        // 2. DASHBOARDPlugin
+        println!("[DEBUG] Loading dashboard plugin...");
+        let dashboard_path = path.join("plugins/dashboard/dashboard.wasm");
+        let dashboard_component = Component::from_file(&engine, &dashboard_path)
+            .context("failed to load dashboard.wasm")?;
+            
+        let mut linker = Linker::new(&engine);
+        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        // dashboard_bindings::DashboardPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+        
+        let mut store_dash = Store::new(&engine, create_host_state());
+        let dashboard_instance = DashboardPlugin::instantiate_async(&mut store_dash, &dashboard_component, &linker).await
+            .context("failed to instantiate dashboard plugin")?;
+        println!("[DEBUG] Loaded dashboard plugin.");
+
+        // 3. BME680Plugin
+        println!("[DEBUG] Loading bme680 plugin...");
+        let bme680_path = path.join("plugins/bme680/bme680.wasm");
+        let bme680_component = Component::from_file(&engine, &bme680_path)
+            .context("failed to load bme680.wasm")?;
+
+        let mut linker = Linker::new(&engine);
+        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        bme680_bindings::Bme680Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+        
+        let mut store_bme = Store::new(&engine, create_host_state());
+        let bme680_instance = Bme680Plugin::instantiate_async(&mut store_bme, &bme680_component, &linker).await
+            .context("failed to instantiate bme680 plugin")?;
+        println!("[DEBUG] Loaded bme680 plugin.");
+
+        Ok(Self {
+            engine,
+            sensor_plugin: Arc::new(Mutex::new(Some(PluginState {
+                // component: sensor_component,
+                last_modified: SystemTime::now(),
+                path: sensor_path,
+                store: store,
+                instance: sensor_instance,
+            }))),
+            dashboard_plugin: Arc::new(Mutex::new(Some(PluginState {
+                // component: dashboard_component,
+                last_modified: SystemTime::now(),
+                path: dashboard_path,
+                store: store_dash,
+                instance: dashboard_instance,
+            }))),
+            bme680_plugin: Arc::new(Mutex::new(Some(PluginState {
+                // component: bme680_component,
+                last_modified: SystemTime::now(),
+                path: bme680_path,
+                store: store_bme,
+                instance: bme680_instance,
+            }))),
         })
     }
     
     /// check for and apply hot reloads
-    pub fn check_hot_reload(&self) {
-        // sensor plugin
-        {
-            let mut plugin_guard = self.sensor_plugin.lock().unwrap();
-            if let Some(ref plugin) = *plugin_guard {
-                if plugin.needs_reload() {
-                    println!("[HOT RELOAD] Sensor plugin changed");
-                    match PluginState::load(&self.engine, &self.sensor_path) {
-                        Ok(p) => {
-                            *plugin_guard = Some(p);
-                            println!("[OK] Sensor plugin reloaded");
-                        }
-                        Err(e) => println!("[ERROR] Reload failed: {:#}", e),
-                    }
-                }
-            } else if self.sensor_path.exists() {
-                if let Ok(p) = PluginState::load(&self.engine, &self.sensor_path) {
-                    *plugin_guard = Some(p);
-                    println!("[OK] Sensor plugin loaded");
-                }
-            }
+    pub async fn check_hot_reload(&self) {
+        let create_host_state = || {
+             let wasi = WasiCtxBuilder::new().inherit_stdio().build();
+             HostState { ctx: wasi, table: ResourceTable::new() }
+        };
+
+        // 1. SENSOR
+        let needs_reload = {
+            let guard = self.sensor_plugin.lock().await;
+            guard.as_ref().map(|p| p.needs_reload()).unwrap_or(false)
+        };
+        if needs_reload {
+             println!("[HOT RELOAD] Reloading sensor plugin...");
+             { let mut guard = self.sensor_plugin.lock().await;
+                 if let Some(old) = guard.as_ref() {
+                     let path = old.path.clone();
+                     
+                     // Try loading new one
+                     // Note: We use an async block to capture the logic, but we must await it safely.
+                     // Since we hold the lock, we must be fast or careful. 
+                     // But we are in async fn, so we can await.
+                     // type annotation needed for async block
+                     let res: Result<PluginState<SensorPlugin>> = async {
+                         let component = Component::from_file(&self.engine, &path)?;
+                         let mut linker = Linker::new(&self.engine);
+                         wasmtime_wasi::add_to_linker_async(&mut linker)?;
+                         sensor_bindings::SensorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+                         let mut store = Store::new(&self.engine, create_host_state());
+                         let instance = SensorPlugin::instantiate_async(&mut store, &component, &linker).await?;
+                         Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
+                     }.await;
+                     
+                     match res {
+                         Ok(new_state) => { *guard = Some(new_state); println!("[OK] Sensor reloaded"); }
+                         Err(e) => println!("[ERR] Sensor reload failed: {:#}", e),
+                     }
+                 }
+             }
         }
-        
-        // dashboard plugin
-        {
-            let mut plugin_guard = self.dashboard_plugin.lock().unwrap();
-            if let Some(ref plugin) = *plugin_guard {
-                if plugin.needs_reload() {
-                    println!("[HOT RELOAD] Dashboard plugin changed");
-                    match PluginState::load(&self.engine, &self.dashboard_path) {
-                        Ok(p) => {
-                            *plugin_guard = Some(p);
-                            println!("[OK] Dashboard plugin reloaded");
-                        }
-                        Err(e) => println!("[ERROR] Reload failed: {:#}", e),
-                    }
-                }
-            } else if self.dashboard_path.exists() {
-                if let Ok(p) = PluginState::load(&self.engine, &self.dashboard_path) {
-                    *plugin_guard = Some(p);
-                    println!("[OK] Dashboard plugin loaded");
-                }
-            }
+
+        // 2. DASHBOARD
+        let needs_reload = {
+            let guard = self.dashboard_plugin.lock().await;
+            guard.as_ref().map(|p| p.needs_reload()).unwrap_or(false)
+        };
+        if needs_reload {
+             println!("[HOT RELOAD] Reloading dashboard plugin...");
+             { let mut guard = self.dashboard_plugin.lock().await;
+                 if let Some(old) = guard.as_ref() {
+                     let path = old.path.clone();
+                     // type annotation needed for async block
+                     let res: Result<PluginState<DashboardPlugin>> = async {
+                         let component = Component::from_file(&self.engine, &path)?;
+                         let mut linker = Linker::new(&self.engine);
+                         wasmtime_wasi::add_to_linker_async(&mut linker)?;
+                         // dashboard_bindings::DashboardPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+                         let mut store = Store::new(&self.engine, create_host_state());
+                         let instance = DashboardPlugin::instantiate_async(&mut store, &component, &linker).await?;
+                         Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
+                     }.await;
+                     
+                     match res {
+                         Ok(new_state) => { *guard = Some(new_state); println!("[OK] Dashboard reloaded"); }
+                         Err(e) => println!("[ERR] Dashboard reload failed: {:#}", e),
+                     }
+                 }
+             }
+        }
+
+        // 3. BME680
+        let needs_reload = {
+            let guard = self.bme680_plugin.lock().await;
+            guard.as_ref().map(|p| p.needs_reload()).unwrap_or(false)
+        };
+        if needs_reload {
+             println!("[HOT RELOAD] Reloading bme680 plugin...");
+             { let mut guard = self.bme680_plugin.lock().await;
+                 if let Some(old) = guard.as_ref() {
+                     let path = old.path.clone();
+                     // type annotation needed for async block
+                     let res: Result<PluginState<Bme680Plugin>> = async {
+                         let component = Component::from_file(&self.engine, &path)?;
+                         let mut linker = Linker::new(&self.engine);
+                         wasmtime_wasi::add_to_linker_async(&mut linker)?;
+                         bme680_bindings::Bme680Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+                         let mut store = Store::new(&self.engine, create_host_state());
+                         let instance = Bme680Plugin::instantiate_async(&mut store, &component, &linker).await?;
+                         Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
+                     }.await;
+                     
+                     match res {
+                         Ok(new_state) => { *guard = Some(new_state); println!("[OK] BME680 reloaded"); }
+                         Err(e) => println!("[ERR] BME680 reload failed: {:#}", e),
+                     }
+                 }
+             }
         }
     }
     
     /// poll sensors by calling the python wasm plugin
     pub async fn poll_sensors(&self) -> Result<Vec<SensorReading>> {
-        self.check_hot_reload();
+        self.check_hot_reload().await;
         
         // get component clone safely
-        let component = {
-            let guard = self.sensor_plugin.lock().unwrap();
-            guard.as_ref()
-                .map(|p| p.component.clone())
-                .ok_or_else(|| anyhow!("sensor plugin not loaded"))?
-        };
+        let mut guard = self.sensor_plugin.lock().await;
+        let plugin = guard.as_mut()
+            .ok_or_else(|| anyhow!("sensor plugin not loaded"))?;
         
-        // create linker and add capabilities
-        let mut linker = Linker::new(&self.engine);
-        
-        // add WASI capabilities (stdio, clocks)
-        wasmtime_wasi::add_to_linker_async(&mut linker)
-            .context("failed to add wasi")?;
-        
-        // add OUR gpio-provider capability
-        sensor_bindings::demo::plugin::gpio_provider::add_to_linker(&mut linker, |state: &mut HostState| state)
-            .context("failed to add gpio-provider")?;
-        
-        // add led-controller capability
-        sensor_bindings::demo::plugin::led_controller::add_to_linker(&mut linker, |state: &mut HostState| state)
-            .context("failed to add led-controller")?;
-        
-        // add buzzer-controller capability
-        sensor_bindings::demo::plugin::buzzer_controller::add_to_linker(&mut linker, |state: &mut HostState| state)
-            .context("failed to add buzzer-controller")?;
-        
-        // create wasi context
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stdio()
-            .build();
-        
-        let state = HostState {
-            ctx: wasi,
-            table: ResourceTable::new(),
-        };
-        
-        let mut store = Store::new(&self.engine, state);
-        
-        // instantiate and call the plugin
-        let instance = SensorPlugin::instantiate_async(&mut store, &component, &linker)
+        // Call the poll function using persistent store
+        let readings = plugin.instance.demo_plugin_sensor_logic()
+            .call_poll(&mut plugin.store)
             .await
-            .context("failed to instantiate sensor plugin")?;
-        
-        // call poll() - this triggers the python code which calls OUR gpio-provider
-        let readings = instance
-            .demo_plugin_sensor_logic()
-            .call_poll(&mut store)
-            .await
-            .context("sensor poll() failed")?;
+            .context("poll failed")?;
         
         // convert to our types
         Ok(readings.into_iter().map(|r| SensorReading {
             sensor_id: r.sensor_id,
             temperature: r.temperature,
             humidity: r.humidity,
+            pressure: None,        // DHT22 has no pressure
+            gas_resistance: None,  // DHT22 has no gas sensor
+            timestamp_ms: r.timestamp_ms,
+        }).collect())
+    }
+
+    /// poll bme680 sensor
+    pub async fn poll_bme680(&self) -> Result<Vec<SensorReading>> {
+        // self.check_hot_reload().await; // already checked
+        
+        let mut guard = self.bme680_plugin.lock().await;
+        let plugin = guard.as_mut()
+            .ok_or_else(|| anyhow!("bme680 plugin not loaded"))?;
+        
+        let readings = plugin.instance.demo_plugin_bme680_logic()
+            .call_poll(&mut plugin.store)
+            .await
+            .context("bme680 poll failed")?;
+
+        Ok(readings.into_iter().map(|r| SensorReading {
+            sensor_id: r.sensor_id,
+            temperature: r.temperature,
+            humidity: r.humidity,
+            pressure: Some(r.pressure),
+            gas_resistance: Some(r.gas_resistance),
             timestamp_ms: r.timestamp_ms,
         }).collect())
     }
     
     /// render dashboard html using the python wasm plugin
-    pub async fn render_dashboard(&self, temp: f32, humidity: f32, cpu_temp: f32) -> Result<String> {
-        // checks hot reload for dashboard too
-        self.check_hot_reload();
-
-        let component = {
-            let guard = self.dashboard_plugin.lock().unwrap();
-            guard.as_ref()
-                .map(|p| p.component.clone())
-                .ok_or_else(|| anyhow!("dashboard plugin not loaded"))?
-        };
+    pub async fn render_dashboard(&self, dht_temp: f32, dht_hum: f32, bme_temp: f32, bme_hum: f32, cpu_temp: f32, pressure: f32, gas: f32) -> Result<String> {
+        self.check_hot_reload().await;
         
-        let mut linker = Linker::new(&self.engine);
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        let mut guard = self.dashboard_plugin.lock().await;
+        let plugin = guard.as_mut()
+            .ok_or_else(|| anyhow!("dashboard plugin not loaded"))?;
         
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stdio()
-            .build();
-        
-        let state = HostState {
-            ctx: wasi,
-            table: ResourceTable::new(),
-        };
-        
-        let mut store = Store::new(&self.engine, state);
-        
-        let instance = DashboardPlugin::instantiate_async(&mut store, &component, &linker)
-            .await
-            .context("failed to instantiate dashboard plugin")?;
-        
-        let html = instance
-            .demo_plugin_dashboard_logic()
-            .call_render(&mut store, temp, humidity, cpu_temp)
+        let html = plugin.instance.demo_plugin_dashboard_logic()
+            .call_render(&mut plugin.store, dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas)
             .await
             .context("dashboard render() failed")?;
         
         Ok(html)
+    }
+}
+
+// ==============================================================================
+// BME680 BINDINGS IMPLEMENTATION
+// ==============================================================================
+// Duplicate implementations for the bme680-plugin world capabilities
+// (Rust treats generated traits from different bindgen! calls as distinct types)
+
+impl bme680_bindings::demo::plugin::gpio_provider::Host for HostState {
+    async fn read_dht22(&mut self, pin: u8) -> Result<(f32, f32), String> {
+        tokio::task::spawn_blocking(move || gpio::read_dht22(pin))
+            .await
+            .map_err(|e| format!("task join error: {}", e))?
+            .map_err(|e| e.to_string())
+    }
+    
+    async fn get_timestamp_ms(&mut self) -> u64 {
+        gpio::get_timestamp_ms()
+    }
+    
+    async fn get_cpu_temp(&mut self) -> f32 {
+        gpio::get_cpu_temp()
+    }
+    
+    async fn read_bme680(&mut self, i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+        tokio::task::spawn_blocking(move || gpio::read_bme680(i2c_addr))
+            .await
+            .map_err(|e| format!("task join error: {}", e))?
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl bme680_bindings::demo::plugin::led_controller::Host for HostState {
+    async fn set_led(&mut self, index: u8, r: u8, g: u8, b: u8) {
+        tokio::task::spawn_blocking(move || gpio::set_led(index, r, g, b)).await.ok();
+    }
+    
+    async fn set_all(&mut self, r: u8, g: u8, b: u8) {
+        tokio::task::spawn_blocking(move || gpio::set_all_leds(r, g, b)).await.ok();
+    }
+    
+    async fn set_two(&mut self, r0: u8, g0: u8, b0: u8, r1: u8, g1: u8, b1: u8) {
+        tokio::task::spawn_blocking(move || gpio::set_two_leds(r0, g0, b0, r1, g1, b1)).await.ok();
+    }
+    
+    async fn clear(&mut self) {
+        tokio::task::spawn_blocking(move || gpio::clear_leds()).await.ok();
     }
 }
