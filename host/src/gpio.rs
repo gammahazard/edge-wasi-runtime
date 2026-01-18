@@ -102,6 +102,18 @@ pub fn get_timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// get raspberry pi cpu temperature in celsius
+///
+/// reads from /sys/class/thermal/thermal_zone0/temp which returns
+/// millidegrees celsius (e.g., 45000 = 45.0°C)
+pub fn get_cpu_temp() -> f32 {
+    std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
+        .ok()
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|t| t / 1000.0)  // convert millidegrees to degrees
+        .unwrap_or(0.0)
+}
+
 // ==============================================================================
 // led control - ws2812b strip via rpi_ws281x
 // ==============================================================================
