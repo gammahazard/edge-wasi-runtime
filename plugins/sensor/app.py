@@ -129,7 +129,7 @@ class SensorLogic(SensorLogic):
                     # Normal: Green
                     print(f"🟢 [OK] Temp {temperature:.1f}C")
 
-                # Set LEDs atomically
+                # Set LEDs atomically to buffer (Host will sync)
                 led_controller.set_two(
                     cpu_color[0], cpu_color[1], cpu_color[2],
                     room_color[0], room_color[1], room_color[2]

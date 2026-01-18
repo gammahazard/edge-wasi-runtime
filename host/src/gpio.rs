@@ -25,6 +25,7 @@
 //! ==============================================================================
 
 use anyhow::{Result, anyhow};
+use std::sync::{Mutex, OnceLock};
 
 /// read dht22 temperature and humidity sensor
 ///
@@ -200,89 +201,104 @@ except Exception as e:
 //
 // hardware: btf lighting ws2812b strip (11 leds) on gpio 18
 //
-// why subprocess?
-//     rpi_ws281x requires root and has timing-sensitive code.
-//     using python subprocess keeps the interface simple and reliable.
+// synchronization (flicker prevention):
+//     we use a global buffer to store led states. plugins update the buffer
+//     atomically via set_led/set_two, but the hardware is only updated when
+//     sync_leds() is called. this prevents multiple plugins from fighting
+//     over the pwm hardware and causing flicker.
 //
 // relationships:
 //     - implements: ../wit/plugin.wit (led-controller interface)
-//     - called by: runtime.rs (HostState::set_led, etc.)
+//     - called by: runtime.rs (HostState implementations)
 
-/// set a single led to an rgb color
-///
-/// uses rpi_ws281x via python subprocess for ws2812b control.
+/// Centralized buffer for LED states (11 LEDs, r-g-b tuples)
+static LED_BUFFER: OnceLock<Mutex<[(u8, u8, u8); 11]>> = OnceLock::new();
+
+fn get_led_buffer() -> &'static Mutex<[(u8, u8, u8); 11]> {
+    LED_BUFFER.get_or_init(|| Mutex::new([(0, 0, 0); 11]))
+}
+
+/// set a single led in the buffer
+pub fn set_led_buffer(index: u8, r: u8, g: u8, b: u8) {
+    if index < 11 {
+        let mut buffer = get_led_buffer().lock().unwrap();
+        buffer[index as usize] = (r, g, b);
+    }
+}
+
+/// set multiple leds in the buffer
+pub fn set_two_buffer(r0: u8, g0: u8, b0: u8, r1: u8, g1: u8, b1: u8) {
+    let mut buffer = get_led_buffer().lock().unwrap();
+    buffer[0] = (r0, g0, b0);
+    buffer[1] = (r1, g1, b1);
+    // turn off the rest in the DASHBOARD active range
+    for i in 2..11 {
+        buffer[i] = (0, 0, 0);
+    }
+}
+
+/// clear the entire buffer
+pub fn clear_led_buffer() {
+    let mut buffer = get_led_buffer().lock().unwrap();
+    for i in 0..11 {
+        buffer[i] = (0, 0, 0);
+    }
+}
+
+/// write the current buffer to the hardware once (prevents flicker)
+pub fn sync_leds() {
+    use std::process::Command;
+    
+    // get snapshot of buffer
+    let data = {
+        let buffer = get_led_buffer().lock().unwrap();
+        buffer.clone()
+    };
+    
+    // generate python script to set the whole strip
+    let mut pixel_logic = String::new();
+    for (i, (r, g, b)) in data.iter().enumerate() {
+        // Always include colors, even if black, to ensure strip is in consistent state
+        pixel_logic.push_str(&format!("strip.setPixelColor({}, Color({}, {}, {}))\n", i, *r, *g, *b));
+    }
+    
+    let script = format!(
+        r#"
+from rpi_ws281x import PixelStrip, Color
+strip = PixelStrip(11, 18, brightness=50)
+strip.begin()
+{}
+strip.show()
+"#,
+        pixel_logic
+    );
+    
+    let _ = Command::new("sudo")
+        .args(["python3", "-c", &script])
+        .output();
+}
+
+// ==============================================================================
+// legacy wrappers (now buffered)
+// ==============================================================================
+
 pub fn set_led(index: u8, r: u8, g: u8, b: u8) {
-    use std::process::Command;
-    
-    let script = format!(
-        r#"
-from rpi_ws281x import PixelStrip, Color
-strip = PixelStrip(11, 18, brightness=50)
-strip.begin()
-strip.setPixelColor({}, Color({}, {}, {}))
-strip.show()
-"#,
-        index, r, g, b
-    );
-    
-    let _ = Command::new("sudo")
-        .args(["python3", "-c", &script])
-        .output();
+    set_led_buffer(index, r, g, b);
 }
 
-/// set all leds to the same rgb color
 pub fn set_all_leds(r: u8, g: u8, b: u8) {
-    use std::process::Command;
-    
-    let script = format!(
-        r#"
-from rpi_ws281x import PixelStrip, Color
-strip = PixelStrip(11, 18, brightness=50)
-strip.begin()
-for i in range(11):
-    strip.setPixelColor(i, Color({}, {}, {}))
-strip.show()
-"#,
-        r, g, b
-    );
-    
-    let _ = Command::new("sudo")
-        .args(["python3", "-c", &script])
-        .output();
+    let mut buffer = get_led_buffer().lock().unwrap();
+    for i in 0..11 {
+        buffer[i] = (r, g, b);
+    }
 }
 
-/// set led 0 and led 1 atomically (avoids flicker)
-///
-/// this sets both leds in a single subprocess call, ensuring they're
-/// both visible at the same time. all other leds are turned off.
 pub fn set_two_leds(r0: u8, g0: u8, b0: u8, r1: u8, g1: u8, b1: u8) {
-    use std::process::Command;
-    
-    let script = format!(
-        r#"
-from rpi_ws281x import PixelStrip, Color
-strip = PixelStrip(11, 18, brightness=50)
-strip.begin()
-# set led 0 (cpu temp)
-strip.setPixelColor(0, Color({}, {}, {}))
-# set led 1 (room temp)
-strip.setPixelColor(1, Color({}, {}, {}))
-# turn off the rest
-for i in range(2, 11):
-    strip.setPixelColor(i, Color(0, 0, 0))
-strip.show()
-"#,
-        r0, g0, b0, r1, g1, b1
-    );
-    
-    let _ = Command::new("sudo")
-        .args(["python3", "-c", &script])
-        .output();
+    set_two_buffer(r0, g0, b0, r1, g1, b1);
 }
 
-/// turn off all leds
 pub fn clear_leds() {
-    set_all_leds(0, 0, 0);
+    clear_led_buffer();
 }
 
 // ==============================================================================

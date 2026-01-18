@@ -1,0 +1,36 @@
+# ==============================================================================
+# WASI Host Configuration
+# ==============================================================================
+# 
+# This file controls runtime behavior without requiring Host recompilation.
+# Edit this file, restart the Host, and see changes immediately.
+#
+# ==============================================================================
+
+[polling]
+# Sensor polling interval in seconds
+interval_seconds = 5
+
+[sensors.dht22]
+# BCM GPIO pin for DHT22 data line
+gpio_pin = 4
+
+[sensors.bme680]
+# I2C address (0x76 or 0x77)
+i2c_address = "0x77"
+
+[leds]
+# WS2812B LED strip configuration
+count = 11
+gpio_pin = 18
+brightness = 50
+
+[buzzer]
+# Relay-controlled piezo buzzer
+gpio_pin = 17
+
+[logging]
+# Log level: "debug", "info", "warn", "error"
+level = "info"
+# Show sensor data in each poll cycle
+show_sensor_data = true

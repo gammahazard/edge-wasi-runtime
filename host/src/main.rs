@@ -66,6 +66,7 @@
 //!
 //! ==============================================================================
 
+mod config;
 mod gpio;
 mod runtime;
 
@@ -114,6 +115,8 @@ pub struct SensorReading {
     pub pressure: Option<f32>,
     /// gas resistance in KOhms (optional, bme680 only)
     pub gas_resistance: Option<f32>,
+    /// IAQ Score 0-500 (optional, bme680 only)
+    pub iaq_score: Option<u16>,
 }
 
 // ==============================================================================
@@ -125,148 +128,131 @@ async fn main() -> Result<()> {
     // startup banner
     println!("===========================================================");
     println!("  WASI Python Host - Reference Demo");
+    println!("  \"Compile Once, Swap WASM\"");
     println!("===========================================================");
-    println!("  Demonstrates:");
-    println!("    - Python code running as WASM components");
-    println!("    - Type-safe cross-language calls via WIT");
-    println!("    - Hot reload without restart");
-    println!("    - Sandboxed plugin execution");
-    println!("===========================================================");
-    println!();
     
-    // step 1: initialize shared state
-    // arc<rwlock<>> enables safe concurrent access from multiple tasks
+    // step 1: load configuration
+    let config = config::HostConfig::load_or_default();
+    config.print_summary();
+    
+    // step 2: initialize shared state
     let state = Arc::new(RwLock::new(AppState::default()));
     
-    // step 2: initialize the wasm runtime
-    // this loads our python plugins compiled to wasm
-    println!("[*] Initializing WASM runtime...");
+    // step 3: initialize the wasm runtime
+    println!("\n[STARTUP] Initializing WASM Runtime...");
     let runtime = match runtime::WasmRuntime::new(std::path::PathBuf::from("..")).await {
         Ok(r) => {
-            println!("[OK] WASM runtime ready");
-            r // NO WRAPPER - WasmRuntime is now thread-safe (Clone)
+            println!("[STARTUP] ✓ WASM runtime ready");
+            println!("[STARTUP] ✓ Loaded plugins: sensor, bme680, dashboard");
+            r
         }
         Err(e) => {
-            // fatal error - can't proceed without runtime
             eprintln!("[ERROR] Fatal: failed to create wasm runtime: {}", e);
-            eprintln!("   ensure wasmtime is installed and wit files are valid");
             return Err(e);
         }
     };
     
-    // step 3: start the web server in background
-    println!();
-    println!("[*] Web server on http://0.0.0.0:3000");
-    println!("    GET /           -> Dashboard (HTML from Python WASM)");
-    println!("    GET /api/sensors -> JSON API");
-    println!();
-    
+    // step 4: start the web server in background
     let web_state = state.clone();
-    let web_runtime = runtime.clone(); // independent clone for web server
+    let web_runtime = runtime.clone();
     tokio::spawn(async move {
+        println!("[STARTUP] ✓ Dashboard live at http://0.0.0.0:3000");
         if let Err(e) = run_server(web_state, web_runtime).await {
             eprintln!("[ERROR] Web server error: {}", e);
         }
     });
     
-    // step 4: main polling loop
-    println!("[*] Sensor polling loop (5s interval)");
-    println!("    Tip: Edit Python plugins and rebuild WASM - hot reload will pick up changes!");
-    println!();
-    println!("-----------------------------------------------------------");
+    // step 5: main polling loop
+    let poll_interval = config.polling.interval_seconds;
+    let show_data = config.logging.show_sensor_data;
+    println!("\n[RUNTIME] Starting sensor polling ({}s interval)", poll_interval);
+    println!("────────────────────────────────────────────────────────────");
     
-    // polling loop owns its own copy of runtime methods
-    // no locking required because internal state is protected
     loop {
         let mut all_readings = Vec::new();
 
-        // 1. Poll DHT22 (Sensor Plugin)
+        // 1. Poll DHT22 (sensor plugin)
         match runtime.poll_sensors().await {
-            Ok(readings) => all_readings.extend(readings),
-            Err(e) => eprintln!("[WARN] DHT22 Sensor error: {:#}", e),
+            Ok(readings) => {
+                if show_data {
+                    for r in &readings {
+                        println!("[DHT22] Temp: {:.1}°C | Humidity: {:.1}%", r.temperature, r.humidity);
+                    }
+                }
+                all_readings.extend(readings);
+            }
+            Err(e) => {
+                println!("[DHT22] ⚠ Read error: {}", e);
+            }
         }
 
-        // 2. Poll BME680 (BME680 Plugin)
+        // 2. Poll BME680 (bme680 plugin)
         match runtime.poll_bme680().await {
-            Ok(readings) => all_readings.extend(readings),
-            Err(e) => eprintln!("[WARN] BME680 Sensor error: {:#}", e),
+            Ok(readings) => {
+                if show_data {
+                    for r in &readings {
+                        let iaq = r.iaq_score.unwrap_or(0);
+                        let status = match iaq {
+                            0 => "CALIBRATING",
+                            1..=50 => "Excellent",
+                            51..=100 => "Good",
+                            101..=150 => "Moderate",
+                            _ => "Poor",
+                        };
+                        println!("[BME680] Temp: {:.1}°C | Humidity: {:.1}% | IAQ: {} ({})", 
+                            r.temperature, r.humidity, iaq, status);
+                    }
+                }
+                all_readings.extend(readings);
+            }
+            Err(e) => {
+                println!("[BME680] ⚠ Read error: {}", e);
+            }
         }
 
-        // Only update state if we got ANY readings
+        // 3. Sync LEDs atomically ONCE after all plugins finish
+        tokio::task::spawn_blocking(|| gpio::sync_leds()).await.ok();
+
         if !all_readings.is_empty() {
-             // Print one summary line
-             // Print one summary line
-             if let Some(first) = all_readings.first() {
-                 let p = all_readings.iter().find_map(|x| x.pressure).unwrap_or(-1.0);
-                 let g = all_readings.iter().find_map(|x| x.gas_resistance).unwrap_or(-1.0);
-                 
-                 print!("🟢 [OK] {:.1}C, {:.1}%", first.temperature, first.humidity);
-                 if p > 0.0 { print!(", {:.1}hPa", p); }
-                 if g > 0.0 { print!(", {:.1}KΩ", g); }
-                 println!(" (CPU: {:.1}C)", gpio::get_cpu_temp());
-             }
-             
-             let mut state = state.write().await;
-             state.readings = all_readings;
-             state.last_update = std::time::SystemTime::now()
+             let mut state_guard = state.write().await;
+             state_guard.readings = all_readings;
+             state_guard.last_update = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64;
         }
         
-        // dht22 sensors are slow and can heat up if polled too fast
-        // 5 seconds is a safe, stable interval
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
     }
 }
+
 
 // ==============================================================================
 // web server
 // ==============================================================================
-// serves the dashboard html (rendered by python wasm) and a json api.
-// uses axum for ergonomic async http handling.
 
 async fn run_server(
     state: Arc<RwLock<AppState>>,
-    runtime: runtime::WasmRuntime, // NO Arc<RwLock<>> wrapper
+    runtime: runtime::WasmRuntime,
 ) -> Result<()> {
-    // create router with shared state
     let app = Router::new()
-        // dashboard endpoint - html rendered by python wasm
         .route("/", get(dashboard_handler))
-        // json api for programmatic access
         .route("/api", get(api_handler))
-        // buzzer control api
         .route("/api/buzzer", post(buzzer_handler))
-        // enable cors for development convenience
         .layer(CorsLayer::permissive())
-        // share state and runtime with handlers
         .with_state((state, runtime));
     
-    // bind and serve
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     axum::serve(listener, app).await?;
-    
     Ok(())
 }
 
-/// dashboard endpoint - html is rendered by the python wasm plugin!
-///
-/// this demonstrates the power of the component model:
-/// - rust handles http (fast, secure)
-/// - python handles templating (flexible, familiar)
-/// - communication is type-safe via wit
 async fn dashboard_handler(
     State((state, runtime)): State<(Arc<RwLock<AppState>>, runtime::WasmRuntime)>,
 ) -> Html<String> {
     let state = state.read().await;
-    // NO runtime lock needed
     
-    // get latest reading (or defaults if none)
-    // iterate to find bme680 data if available
-    // get latest reading (or defaults if none)
-    // iterate to find dht (pressure=None) and bme680 (pressure=Some)
-    let (dht_temp, dht_hum, bme_temp, bme_hum, pressure, gas) = {
+    let (dht_temp, dht_hum, bme_temp, bme_hum, pressure, gas, iaq) = {
         let dht = state.readings.iter().find(|x| x.pressure.is_none());
         let dt = dht.map(|x| x.temperature).unwrap_or(0.0);
         let dh = dht.map(|x| x.humidity).unwrap_or(0.0);
@@ -276,15 +262,16 @@ async fn dashboard_handler(
         let bh = bme.map(|x| x.humidity).unwrap_or(0.0);
         let p = bme.and_then(|x| x.pressure).unwrap_or(-1.0);
         let g = bme.and_then(|x| x.gas_resistance).unwrap_or(-1.0);
+        let i = bme.and_then(|x| x.iaq_score).unwrap_or(0);
         
-        (dt, dh, bt, bh, p, g)
+        (dt, dh, bt, bh, p, g, i)
     };
     
     // get cpu temperature
     let cpu_temp = gpio::get_cpu_temp();
     
     // call python wasm to render html!
-    match runtime.render_dashboard(dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas).await {
+    match runtime.render_dashboard(dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas, iaq).await {
         Ok(html) => Html(html),
         Err(e) => {
             // render error page if plugin fails

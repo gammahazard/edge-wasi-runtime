@@ -118,6 +118,9 @@ interface led-controller {
     
     // turn off all leds (set to black)
     clear: func();
+
+    // flush memory buffer to hardware (avoids flicker between plugins)
+    sync-leds: func();
 }
 
 // =============================================================================
@@ -171,6 +174,8 @@ interface bme680-logic {
         humidity: f32,
         pressure: f32,
         gas-resistance: f32,
+        iaq-score: u16,
+        iaq-accuracy: u8,
         timestamp-ms: u64,
     }
 
@@ -187,7 +192,8 @@ interface dashboard-logic {
     // @param cpu-temp: raspberry pi cpu temperature in celsius
     // @param pressure: atmospheric pressure in hPa (optional, -1.0 if missing)
     // @param gas: gas resistance in KOhms (optional, -1.0 if missing)
-    render: func(dht-temp: f32, dht-hum: f32, bme-temp: f32, bme-hum: f32, cpu-temp: f32, pressure: f32, gas: f32) -> string;
+    // @param iaq: indoor air quality score (0-500) (optional, 0 if missing)
+    render: func(dht-temp: f32, dht-hum: f32, bme-temp: f32, bme-hum: f32, cpu-temp: f32, pressure: f32, gas: f32, iaq: u16) -> string;
 }
 
 world sensor-plugin {
