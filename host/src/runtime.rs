@@ -103,6 +103,11 @@ impl sensor_bindings::demo::plugin::gpio_provider::Host for HostState {
     async fn get_timestamp_ms(&mut self) -> u64 {
         gpio::get_timestamp_ms()
     }
+    
+    /// get cpu temperature - called by python wasm plugin
+    async fn get_cpu_temp(&mut self) -> f32 {
+        gpio::get_cpu_temp()
+    }
 }
 
 // ==============================================================================

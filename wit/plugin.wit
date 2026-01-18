@@ -65,6 +65,11 @@ interface gpio-provider {
     // get current timestamp in milliseconds (unix epoch)
     // used for timestamping readings since WASM has no system clock access by default
     get-timestamp-ms: func() -> u64;
+    
+    // get raspberry pi cpu temperature in celsius
+    // reads from /sys/class/thermal/thermal_zone0/temp
+    // useful for monitoring system health and preventing thermal throttling
+    get-cpu-temp: func() -> f32;
 }
 
 // =============================================================================
