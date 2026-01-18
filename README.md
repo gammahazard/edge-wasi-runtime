@@ -6,7 +6,7 @@
 ![Raspberry Pi](https://img.shields.io/badge/-Raspberry_Pi-C51A4A?style=for-the-badge&logo=Raspberry-Pi)
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
 
-![Dashboard Preview](screenshots/dashboard-full.png)
+![Dashboard Preview](screenshots/dashboard-full.png?v=2)
 
 A reference implementation demonstrating **Python WASM modules** reading **real sensor data** (DHT22, BME680) on a Raspberry Pi, using the **WASI Component Model** with a Rust host.
 
