@@ -161,7 +161,11 @@ interface sensor-logic {
 interface dashboard-logic {
     // render a complete html dashboard page with real sensor data
     // called by the host when a browser hits http://host:3000/
-    render: func(temperature: f32, humidity: f32) -> string;
+    //
+    // @param temperature: room temperature in celsius (from dht22)
+    // @param humidity: relative humidity percentage (from dht22)
+    // @param cpu-temp: raspberry pi cpu temperature in celsius
+    render: func(temperature: f32, humidity: f32, cpu-temp: f32) -> string;
 }
 
 world sensor-plugin {

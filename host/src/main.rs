@@ -72,10 +72,11 @@ mod runtime;
 use anyhow::Result;
 use axum::{
     Router,
-    routing::get,
+    routing::{get, post},
     response::{Html, Json},
-    extract::State,
+    extract::{State, Query},
 };
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -221,6 +222,8 @@ async fn run_server(
         .route("/", get(dashboard_handler))
         // json api for programmatic access
         .route("/api", get(api_handler))
+        // buzzer control api
+        .route("/api/buzzer", post(buzzer_handler))
         // enable cors for development convenience
         .layer(CorsLayer::permissive())
         // share state and runtime with handlers
@@ -250,8 +253,11 @@ async fn dashboard_handler(
         .map(|r| (r.temperature, r.humidity))
         .unwrap_or((0.0, 0.0));
     
+    // get cpu temperature
+    let cpu_temp = gpio::get_cpu_temp();
+    
     // call python wasm to render html!
-    match runtime.render_dashboard(temp, humidity).await {
+    match runtime.render_dashboard(temp, humidity, cpu_temp).await {
         Ok(html) => Html(html),
         Err(e) => {
             // render error page if plugin fails
@@ -279,6 +285,32 @@ async fn api_handler(
 ) -> Json<AppState> {
     let state = state.read().await;
     Json(state.clone())
+}
+
+/// buzzer control params
+#[derive(Deserialize)]
+struct BuzzerParams {
+    action: String,
+}
+
+/// buzzer control endpoint
+/// POST /api/buzzer?action=beep|beep3|toggle
+async fn buzzer_handler(
+    Query(params): Query<BuzzerParams>,
+) -> Json<serde_json::Value> {
+    match params.action.as_str() {
+        "beep" => {
+            tokio::task::spawn_blocking(|| gpio::buzz(200));
+            Json(serde_json::json!({"status": "ok", "action": "beep"}))
+        }
+        "beep3" => {
+            tokio::task::spawn_blocking(|| gpio::beep(3, 100, 100));
+            Json(serde_json::json!({"status": "ok", "action": "beep3"}))
+        }
+        _ => {
+            Json(serde_json::json!({"status": "error", "message": "unknown action"}))
+        }
+    }
 }
 
 /// escape html special characters to prevent xss
