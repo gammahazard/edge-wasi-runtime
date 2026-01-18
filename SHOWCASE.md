@@ -88,6 +88,9 @@ If you just wanted to read a sensor, a 5-line Python script is fine.
 | 1   | Red    | Room > 30°C       |
 | 1   | Blue   | Room < 15°C       |
 | 1   | Cyan   | Humidity > 80%    |
+| 2   | Green  | Air Quality Good (>50KΩ)|
+| 2   | Yellow | Air Quality Mod (10-50KΩ)|
+| 2   | Red    | Air Quality Bad (<10KΩ) |
 
 Buzzer sounds on high temp (3 beeps) or high humidity (2 beeps).
 
