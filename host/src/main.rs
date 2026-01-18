@@ -110,6 +110,10 @@ pub struct SensorReading {
     pub humidity: f32,
     /// reading timestamp in milliseconds
     pub timestamp_ms: u64,
+    /// pressure in hPa (optional, bme680 only)
+    pub pressure: Option<f32>,
+    /// gas resistance in KOhms (optional, bme680 only)
+    pub gas_resistance: Option<f32>,
 }
 
 // ==============================================================================
@@ -137,7 +141,7 @@ async fn main() -> Result<()> {
     // step 2: initialize the wasm runtime
     // this loads our python plugins compiled to wasm
     println!("[*] Initializing WASM runtime...");
-    let runtime = match runtime::WasmRuntime::new() {
+    let runtime = match runtime::WasmRuntime::new(std::path::PathBuf::from("..")).await {
         Ok(r) => {
             println!("[OK] WASM runtime ready");
             r // NO WRAPPER - WasmRuntime is now thread-safe (Clone)
@@ -174,30 +178,40 @@ async fn main() -> Result<()> {
     // polling loop owns its own copy of runtime methods
     // no locking required because internal state is protected
     loop {
-        // poll sensors - this calls the python wasm plugin
+        let mut all_readings = Vec::new();
+
+        // 1. Poll DHT22 (Sensor Plugin)
         match runtime.poll_sensors().await {
-            Ok(readings) => {
-                // only update state if we got valid readings
-                // (prevents ui showing zeros on transient errors)
-                if !readings.is_empty() {
-                    println!("[SENSOR] {:.1}C, {:.1}%", 
-                        readings[0].temperature, 
-                        readings[0].humidity
-                    );
-                    
-                    // update shared state
-                    let mut state = state.write().await;
-                    state.readings = readings;
-                    state.last_update = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64;
-                }
-            }
-            Err(e) => {
-                // log error but continue - resilient operation
-                eprintln!("[WARN] Sensor error: {:#}", e);
-            }
+            Ok(readings) => all_readings.extend(readings),
+            Err(e) => eprintln!("[WARN] DHT22 Sensor error: {:#}", e),
+        }
+
+        // 2. Poll BME680 (BME680 Plugin)
+        match runtime.poll_bme680().await {
+            Ok(readings) => all_readings.extend(readings),
+            Err(e) => eprintln!("[WARN] BME680 Sensor error: {:#}", e),
+        }
+
+        // Only update state if we got ANY readings
+        if !all_readings.is_empty() {
+             // Print one summary line
+             // Print one summary line
+             if let Some(first) = all_readings.first() {
+                 let p = all_readings.iter().find_map(|x| x.pressure).unwrap_or(-1.0);
+                 let g = all_readings.iter().find_map(|x| x.gas_resistance).unwrap_or(-1.0);
+                 
+                 print!("🟢 [OK] {:.1}C, {:.1}%", first.temperature, first.humidity);
+                 if p > 0.0 { print!(", {:.1}hPa", p); }
+                 if g > 0.0 { print!(", {:.1}KΩ", g); }
+                 println!(" (CPU: {:.1}C)", gpio::get_cpu_temp());
+             }
+             
+             let mut state = state.write().await;
+             state.readings = all_readings;
+             state.last_update = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
         }
         
         // dht22 sensors are slow and can heat up if polled too fast
@@ -249,15 +263,28 @@ async fn dashboard_handler(
     // NO runtime lock needed
     
     // get latest reading (or defaults if none)
-    let (temp, humidity) = state.readings.first()
-        .map(|r| (r.temperature, r.humidity))
-        .unwrap_or((0.0, 0.0));
+    // iterate to find bme680 data if available
+    // get latest reading (or defaults if none)
+    // iterate to find dht (pressure=None) and bme680 (pressure=Some)
+    let (dht_temp, dht_hum, bme_temp, bme_hum, pressure, gas) = {
+        let dht = state.readings.iter().find(|x| x.pressure.is_none());
+        let dt = dht.map(|x| x.temperature).unwrap_or(0.0);
+        let dh = dht.map(|x| x.humidity).unwrap_or(0.0);
+
+        let bme = state.readings.iter().find(|x| x.pressure.is_some());
+        let bt = bme.map(|x| x.temperature).unwrap_or(0.0);
+        let bh = bme.map(|x| x.humidity).unwrap_or(0.0);
+        let p = bme.and_then(|x| x.pressure).unwrap_or(-1.0);
+        let g = bme.and_then(|x| x.gas_resistance).unwrap_or(-1.0);
+        
+        (dt, dh, bt, bh, p, g)
+    };
     
     // get cpu temperature
     let cpu_temp = gpio::get_cpu_temp();
     
     // call python wasm to render html!
-    match runtime.render_dashboard(temp, humidity, cpu_temp).await {
+    match runtime.render_dashboard(dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas).await {
         Ok(html) => Html(html),
         Err(e) => {
             // render error page if plugin fails

@@ -63,75 +63,71 @@ class DashboardLogic(DashboardLogic):
         render: func(temperature: f32, humidity: f32, cpu-temp: f32) -> string
     
     python signature:
-        def render(self, temperature: float, humidity: float, cpu_temp: float) -> str
+        def render(self, temperature: float, humidity: float, cpu_temp: float, pressure: float, gas: float) -> str
     """
     
-    def render(self, temperature: float, humidity: float, cpu_temp: float) -> str:
+    def render(self, dht_temp: float, dht_hum: float, bme_temp: float, bme_hum: float, cpu_temp: float, pressure: float, gas: float) -> str:
         """
-        render a complete html dashboard page with the given sensor readings.
-        
-        args:
-            temperature: current room temperature in celsius
-            humidity: current relative humidity percentage
-            cpu_temp: raspberry pi cpu temperature in celsius
-            
-        returns:
-            complete html document as a string
-            (including <!doctype html>)
-            
-        called by:
-            rust host's dashboard_handler in main.rs
-            
-        design notes:
-            - we return complete html, not fragments (simpler for demo)
-            - css is inline to avoid asset serving complexity
-            - auto-refresh via meta tag for live updates
-            - dark theme with modern styling for visual appeal
+        render a complete html dashboard page with comparison layout.
         """
         
+        # dht colors
+        dht_temp_class = "reading temp"
+        if dht_temp > 30.0: dht_temp_class += " danger"
+        elif dht_temp < 10.0: dht_temp_class += " cold"
         
-        # determine status styling based on values
-        # this shows python logic running in wasm
-        temp_class = "reading temp"
-        if temperature > 30.0:
-            temp_class += " danger"
-        elif temperature < 10.0:
-            temp_class += " cold"
+        dht_hum_class = "reading humidity"
+        if dht_hum > 80.0: dht_hum_class += " danger"
+        elif dht_hum < 20.0: dht_hum_class += " warning"
+
+        # bme colors
+        bme_temp_class = "reading temp"
+        if bme_temp > 30.0: bme_temp_class += " danger"
+        elif bme_temp < 10.0: bme_temp_class += " cold"
         
-        humidity_class = "reading humidity"
-        if humidity > 80.0:
-            humidity_class += " danger"
-        elif humidity < 20.0:
-            humidity_class += " warning"
+        bme_hum_class = "reading humidity"
+        if bme_hum > 80.0: bme_hum_class += " danger"
+        elif bme_hum < 20.0: bme_hum_class += " warning"
         
         # cpu temp status
         cpu_class = "reading cpu"
-        if cpu_temp > 70.0:
-            cpu_class += " danger"
-        elif cpu_temp > 50.0:
-            cpu_class += " warning"
+        if cpu_temp > 70.0: cpu_class += " danger"
+        elif cpu_temp > 50.0: cpu_class += " warning"
+
+        # status checks for new metrics
+        pres_display = f"{pressure:.1f} hPa" if pressure > 0 else "N/A"
+        gas_display = f"{gas:.1f} KΩ" if gas > 0 else "N/A"
         
-        # build the complete html page
-        # using f-string for templating (simple and fast)
-        # NOTE: CSS brackets {} must be doubled {{}} to escape specific styles
+        # simple air quality heuristic based on gas resistance
+        aq_status = "UNKNOWN"
+        aq_class = "reading"
+        if gas > 0:
+            if gas > 50:
+                aq_status = "GOOD"
+                aq_class += " safe"
+            elif gas < 10:
+                aq_status = "BAD"
+                aq_class += " danger"
+            else:
+                aq_status = "MODERATE"
+                aq_class += " warning"
+        
         html = f"""<!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>wasi python dashboard</title>
-    
-    <!-- inline css - complete design system -->
     <style>
         /* ==== design tokens (TERMINAL/CRT THEME) ==== */
         :root {{
-            --bg-primary: #0a0a0a;  /* Deep black */
-            --bg-card: #111111;     /* Slightly lighter black */
+            --bg-primary: #0a0a0a;
+            --bg-card: #111111;
             --bg-hover: #1a1a1a;
-            --accent: #33ff33;      /* TERMINAL GREEN */
+            --accent: #33ff33;
             --text-primary: #33ff33;
             --text-secondary: #22cc22;
-            --success: #33ff33;     /* GREEN */
+            --success: #33ff33;
             --warning: #ffcc00;
             --danger: #ff3333;
             --cold: #66ccff;
@@ -140,11 +136,10 @@ class DashboardLogic(DashboardLogic):
             --shadow-hover: 0 0 20px rgba(51,255,51,0.3);
         }}
         
-        /* ==== base reset ==== */
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         
         body {{
-            font-family: 'VT323', 'Courier New', monospace; /* TERMINAL FONT */
+            font-family: 'VT323', 'Courier New', monospace;
             background: var(--bg-primary);
             color: var(--text-primary);
             min-height: 100vh;
@@ -153,343 +148,193 @@ class DashboardLogic(DashboardLogic):
             align-items: center;
             padding: 2rem;
             line-height: 1.5;
-            /* CRT scanline effect */
-            background-image: 
-                repeating-linear-gradient(
-                    0deg,
-                    rgba(0, 0, 0, 0.15),
-                    rgba(0, 0, 0, 0.15) 1px,
-                    transparent 1px,
-                    transparent 2px
-                );
+            background-image: repeating-linear-gradient(0deg, rgba(0,0,0,0.15), rgba(0,0,0,0.15) 1px, transparent 1px, transparent 2px);
         }}
         
-        /* ==== header ==== */
         .header {{
             text-align: center;
-            margin-bottom: 3rem;
+            margin-bottom: 2rem;
             border: 2px solid var(--accent);
             padding: 1rem;
             background: rgba(0,0,0,0.5);
+            width: 100%; max-width: 900px;
         }}
+        .header h1 {{ font-size: 2rem; margin-bottom: 0.5rem; text-shadow: 0 0 10px var(--accent); }}
         
-        .header h1 {{
-            font-size: 2.5rem;
-            margin-bottom: 1rem;
-            color: var(--accent);
-            text-transform: uppercase;
-            letter-spacing: 0.2em;
-            text-shadow: 0 0 10px var(--accent); /* CRT GLOW */
-        }}
-        
-        .header p {{
-            color: var(--text-secondary);
-        }}
-        
-        /* ==== badges ==== */
-        .badge {{
-            display: inline-block;
-            background: rgba(255, 0, 255, 0.1);
-            padding: 4px 12px;
-            font-size: 0.75rem;
-            color: var(--success);
-            border: 1px solid var(--success);
-            margin: 0.25rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            box-shadow: 0 0 5px var(--success);
-        }}
-        
-        /* ==== sensor cards with POLISH ==== */
         .grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
             gap: 2rem;
             max-width: 900px;
             width: 100%;
+            margin-bottom: 2rem;
         }}
         
         .card {{
             background: var(--bg-card);
-            padding: 2.5rem;
+            padding: 2rem;
             border: 2px solid var(--accent);
-            border-radius: 0; /* Sharp corners */
             box-shadow: var(--shadow);
-            transition: all 0.2s ease;
             position: relative;
         }}
-        
-        .card:hover {{
-            box-shadow: var(--shadow-hover);
-            background: var(--bg-hover);
-            border-color: var(--accent);
-        }}
-        
-        /* Scanline effect */
-        .card::before {{
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(transparent 50%, rgba(0,0,0,0.3) 50%);
-            background-size: 100% 4px;
-            pointer-events: none;
-            opacity: 0.3;
-        }}
-        
-        .card:hover {{
-            transform: translate(-4px, -4px);
-            box-shadow: 4px 4px 0 var(--success); /* Retro shadow */
-            background: var(--bg-hover);
-        }}
+        .card:hover {{ box-shadow: var(--shadow-hover); background: var(--bg-hover); transform: translate(-2px, -2px); }}
         
         .card-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 1.5rem;
-            color: var(--success);
-            font-size: 1rem;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            font-weight: 400;
+            margin-bottom: 1rem;
             border-bottom: 1px solid var(--success);
             padding-bottom: 0.5rem;
-        }}
-        
-        .card-icon {{
-            font-size: 1.5rem;
-        }}
-        
-        /* ==== readings ==== */
-        .reading {{
-            font-size: 3.5rem;
-            font-weight: 700;
-            text-shadow: 0 0 15px currentColor; /* GLOWING NUMBERS */
-            transition: opacity 0.15s ease-in-out; /* Smooth fade effect */
-        }}
-        
-        .unit {{
-            font-size: 1.5rem;
-            color: var(--text-secondary);
-            font-weight: 400;
-            text-shadow: none;
-        }}
-        
-        .temp {{ color: var(--accent); }}
-        .humidity {{ color: var(--success); }}
-        .cpu {{ color: #ff9900; }}  /* ORANGE for CPU */
-        .cold {{ color: var(--cold); }}
-        .warning {{ color: var(--warning); }}
-        .danger {{ color: var(--danger); }}
-        
-        /* ==== buzzer controls ==== */
-        .controls {{
-            margin-top: 2rem;
-            text-align: center;
-            padding: 1.5rem;
-            border: 1px solid var(--accent);
-            background: rgba(0,0,0,0.5);
-            max-width: 600px;
-        }}
-        
-        .controls h2 {{
-            color: var(--accent);
-            margin-bottom: 1rem;
             font-size: 1.2rem;
-        }}
-        
-        .btn {{
-            background: transparent;
-            color: var(--accent);
-            border: 2px solid var(--accent);
-            padding: 0.8rem 1.5rem;
-            margin: 0.5rem;
-            font-family: inherit;
-            font-size: 1rem;
-            cursor: pointer;
-            text-transform: uppercase;
-            transition: all 0.2s;
-        }}
-        
-        .btn:hover {{
-            background: var(--accent);
-            color: var(--bg-primary);
-            box-shadow: 0 0 15px var(--accent);
-        }}
-        
-        .btn:active {{
-            transform: scale(0.95);
-        }}
-        
-        /* ==== footer ==== */
-        .footer {{
-            margin-top: 3rem;
-            text-align: center;
-            color: var(--text-secondary);
-            font-size: 0.8rem;
-        }}
-        
-        /* ==== footer architecture box (UPDATED) ==== */
-        .badge {{
-            display: inline-block;
-            padding: 0.5rem 1rem;
-            margin: 0 0.5rem;
-            background: var(--bg-card);
-            border: 1px solid var(--accent);
-            border-radius: 0; /* Sharp corners for terminal look */
-            font-size: 0.9rem;
-            color: var(--accent);
-            font-weight: 400;
-            text-transform: uppercase;
-        }}
-        .architecture {{
-            margin: 2rem auto;
-            max-width: 600px;
-            padding: 1.5rem;
-            background: rgba(0,0,0,0.5);
-            font-family: 'consolas', 'monaco', monospace;
-            font-size: 0.8rem;
-            color: var(--success);
-            border: 1px solid var(--success);
-            box-shadow: 0 0 10px rgba(0,255,255,0.1);
-            position: relative;
-        }}
-        
-        .architecture code {{
-            color: var(--accent);
             font-weight: bold;
         }}
         
-        /* ==== responsive ==== */
-        @media (max-width: 600px) {{
-            body {{ padding: 1rem; }}
-            .header h1 {{ font-size: 1.75rem; }}
-            .reading {{ font-size: 2.5rem; }}
+        .reading-row {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
         }}
+        .reading-label {{ font-size: 1rem; color: var(--text-secondary); }}
+        .reading-val {{ font-size: 2.5rem; font-weight: bold; text-shadow: 0 0 5px currentColor; }}
+        
+        .divider {{
+            width: 100%; max-width: 900px;
+            border: 0; border-top: 1px dashed var(--accent);
+            margin: 2rem 0;
+            opacity: 0.5;
+        }}
+        
+        .controls {{
+            width: 100%; max-width: 900px;
+            border: 1px solid var(--accent);
+            padding: 1.5rem;
+            text-align: center;
+        }}
+        
+        .btn {{
+            background: transparent; color: var(--accent); border: 2px solid var(--accent);
+            padding: 0.8rem 1.5rem; margin: 0.5rem; cursor: pointer; font-family: inherit;
+            text-transform: uppercase; font-weight: bold;
+        }}
+        .btn:hover {{ background: var(--accent); color: var(--bg-primary); }}
+
+        .temp {{ color: var(--accent); }}
+        .humidity {{ color: var(--success); }}
+        .cpu {{ color: #ff9900; }}
+        .danger {{ color: var(--danger); }}
+        .warning {{ color: var(--warning); }}
+
+        .badge {{ display: inline-block; padding: 2px 8px; border: 1px solid var(--accent); font-size: 0.8rem; margin-right: 5px; }}
     </style>
 </head>
 <body>
     <script>
-        // Live update system - fetch new data without page reload
-        let lastTemp = {temperature:.1f};
-        let lastHumidity = {humidity:.1f};
-        
         async function updateReadings() {{
             try {{
                 const response = await fetch('/api');
                 const data = await response.json();
                 
-                // Get current readings (first in array)
-                if (data.readings && data.readings.length > 0) {{
-                    const reading = data.readings[0];
-                    
-                    // Update temperature if changed
-                    if (reading.temperature !== lastTemp) {{
-                        const tempElement = document.querySelector('.temp');
-                        tempElement.style.opacity = '0.5';
-                        setTimeout(() => {{
-                            tempElement.childNodes[0].textContent = reading.temperature.toFixed(1);
-                            tempElement.style.opacity = '1';
-                        }}, 150);
-                        lastTemp = reading.temperature;
-                    }}
-                    
-                    // Update humidity if changed
-                    if (reading.humidity !== lastHumidity) {{
-                        const humidityElement = document.querySelector('.humidity');
-                        humidityElement.style.opacity = '0.5';
-                        setTimeout(() => {{
-                            humidityElement.childNodes[0].textContent = reading.humidity.toFixed(1);
-                            humidityElement.style.opacity = '1';
-                        }}, 150);
-                        lastHumidity = reading.humidity;
-                    }}
+                // Find sensors
+                const dht = data.readings.find(r => !r.pressure);
+                const bme = data.readings.find(r => r.pressure);
+                
+                if (dht) {{
+                    document.getElementById('dht-temp').textContent = dht.temperature.toFixed(1);
+                    document.getElementById('dht-hum').textContent = dht.humidity.toFixed(1);
                 }}
-            }} catch (error) {{
-                console.error('Failed to fetch readings:', error);
-            }}
+                if (bme) {{
+                    document.getElementById('bme-temp').textContent = bme.temperature.toFixed(1);
+                    document.getElementById('bme-hum').textContent = bme.humidity.toFixed(1);
+                    document.getElementById('pres').textContent = bme.pressure.toFixed(1) + " hPa";
+                    document.getElementById('gas').textContent = bme.gas_resistance.toFixed(1) + " KΩ";
+                }}
+            }} catch (e) {{ console.error(e); }}
         }}
-        
-        // Poll every 2 seconds
         setInterval(updateReadings, 2000);
+        
+        async function buzzerAction(a) {{ fetch('/api/buzzer?action='+a, {{method:'POST'}}); }}
     </script>
+    
     <header class="header">
-        <h1>// SYSTEM_DASHBOARD</h1>
-        <p>
-            <span class="badge">host::rust</span>
-            <span class="badge">guest::python</span>
-            <span class="badge">wasi::v0.2</span>
-        </p>
+        <h1>// SENSOR DASHBOARD</h1>
+        <div><span class="badge">HOST: RUST</span> <span class="badge">LOGIC: PYTHON</span> <span class="badge">WASM</span></div>
     </header>
-    
-    <main class="grid">
+
+    <!-- COMPARISON ROW -->
+    <div class="grid">
         <article class="card">
             <header class="card-header">
-                <span>>> TEMPERATURE</span>
-                <span class="card-icon">[T]</span>
+                <span>DHT22 SENSOR</span>
+                <span>[A]</span>
             </header>
-            <div class="{temp_class}">
-                {temperature:.1f}<span class="unit">&deg;C</span>
+            <div class="reading-row">
+                <span class="reading-label">TEMP</span>
+                <span id="dht-temp" class="{dht_temp_class} reading-val">{dht_temp:.1f}</span><span class="unit">&deg;C</span>
             </div>
+            <div class="reading-row">
+                <span class="reading-label">HUMIDITY</span>
+                <span id="dht-hum" class="{dht_hum_class} reading-val">{dht_hum:.1f}</span><span class="unit">%</span>
+            </div>
+        </article>
+
+        <article class="card">
+            <header class="card-header">
+                <span>BME680 SENSOR</span>
+                <span>[B]</span>
+            </header>
+            <div class="reading-row">
+                <span class="reading-label">TEMP</span>
+                <span id="bme-temp" class="{bme_temp_class} reading-val">{bme_temp:.1f}</span><span class="unit">&deg;C</span>
+            </div>
+            <div class="reading-row">
+                <span class="reading-label">HUMIDITY</span>
+                <span id="bme-hum" class="{bme_hum_class} reading-val">{bme_hum:.1f}</span><span class="unit">%</span>
+            </div>
+        </article>
+    </div>
+
+    <!-- CPU TEMP (CENTERED) -->
+    <div style="width:100%; max-width:900px; margin-bottom:2rem;">
+        <article class="card" style="text-align: center;">
+            <header class="card-header" style="justify-content: center;">>> CPU TEMPERATURE <<</header>
+            <div class="{cpu_class} reading-val">{cpu_temp:.1f}<span class="unit">&deg;C</span></div>
+        </article>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ENV DATA -->
+    <div class="grid">
+        <article class="card">
+            <header class="card-header">PRESSURE</header>
+            <div id="pres" class="reading-val" style="font-size: 2rem;">{pres_display}</div>
         </article>
         
         <article class="card">
-            <header class="card-header">
-                <span>>> HUMIDITY</span>
-                <span class="card-icon">[H]</span>
-            </header>
-            <div class="{humidity_class}">
-                {humidity:.1f}<span class="unit">%</span>
-            </div>
+            <header class="card-header">AIR QUALITY</header>
+            <div id="gas" class="{aq_class} reading-val" style="font-size: 2rem;">{gas_display}</div>
+            <div style="margin-top:10px;">STATUS: {aq_status}</div>
         </article>
-        
-        <article class="card">
-            <header class="card-header">
-                <span>>> CPU TEMP</span>
-                <span class="card-icon">[C]</span>
-            </header>
-            <div class="{cpu_class}">
-                {cpu_temp:.1f}<span class="unit">&deg;C</span>
-            </div>
-        </article>
-    </main>
-    
-    <!-- Buzzer Controls -->
+    </div>
+
+    <hr class="divider">
+
     <section class="controls">
-        <h2>>> BUZZER CONTROL</h2>
-        <button class="btn" onclick="buzzerAction('beep')">BEEP ONCE</button>
+        <h2>>> BUZZER CONTROL <<</h2>
+        <button class="btn" onclick="buzzerAction('beep')">BEEP</button>
         <button class="btn" onclick="buzzerAction('beep3')">3 BEEPS</button>
-        <button class="btn" onclick="buzzerAction('long')">LONG BEEP (5s)</button>
+        <button class="btn" onclick="buzzerAction('long')">LONG (5s)</button>
     </section>
     
-    <script>
-        async function buzzerAction(action) {{
-            try {{
-                await fetch('/api/buzzer?action=' + action, {{ method: 'POST' }});
-            }} catch (e) {{
-                console.error('Buzzer error:', e);
-            }}
-        }}
-    </script>
-    
-    <footer class="footer">
-        <p>STATUS: <strong>ONLINE</strong> | RENDERER: <strong>PYTHON_WASM</strong></p>
-        <div class="architecture">
-            flow: browser -> rust_host -> <code>render()</code> -> python_wasm -> html
-        </div>
-    </footer>
 </body>
 </html>"""
-        
         return html
 
 
 # ==============================================================================
 # optional: local testing without wasm
-# ==============================================================================
 # uncomment to test the html output locally:
 #
 # if __name__ == "__main__":

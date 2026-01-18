@@ -114,6 +114,86 @@ pub fn get_cpu_temp() -> f32 {
         .unwrap_or(0.0)
 }
 
+/// read bme680 environmental sensor via python subprocess
+///
+/// why subprocess?
+/// i2c drivers in rust can be finicky on some pi kernels.
+/// using the 'bme680' python library is battle-tested and matches our pattern.
+pub fn read_bme680(i2c_addr: u8) -> Result<(f32, f32, f32, f32)> {
+    use std::process::Command;
+
+    // python script to read bme680
+    // returns json: {"t": 24.5, "h": 40.2, "p": 1013.2, "g": 120.5}
+    let script = format!(
+        r#"
+import sys
+import json
+try:
+    import bme680
+    import time
+    
+    # 0x76 (primary) or 0x77 (secondary)
+    try:
+        sensor = bme680.BME680(0x{:02x})
+    except (RuntimeError, IOError):
+        # fallback try other address if user specified wrong one
+        alt_addr = 0x77 if 0x{:02x} == 0x76 else 0x76
+        sensor = bme680.BME680(alt_addr)
+
+    # These oversampling settings can be tweaked
+    sensor.set_humidity_oversample(bme680.OS_2X)
+    sensor.set_pressure_oversample(bme680.OS_4X)
+    sensor.set_temperature_oversample(bme680.OS_8X)
+    sensor.set_filter(bme680.FILTER_SIZE_3)
+    sensor.set_gas_status(bme680.ENABLE_GAS_MEAS)
+
+    # Force a measurement
+    if sensor.get_sensor_data():
+        output = {{
+            "t": sensor.data.temperature,
+            "h": sensor.data.humidity,
+            "p": sensor.data.pressure,
+            "g": sensor.data.gas_resistance / 1000.0  # Convert to KOhms
+        }}
+        print(json.dumps(output))
+    else:
+        print("null")
+
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+"#,
+        i2c_addr, i2c_addr
+    );
+
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(&script)
+        .output()
+        .map_err(|e| anyhow!("Failed to run python3: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Python BME680 error: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if stdout == "null" || stdout.is_empty() {
+        return Err(anyhow!("Sensor returned null"));
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| anyhow!("JSON parse error: {} (got: {})", e, stdout))?;
+
+    let temp = parsed["t"].as_f64().unwrap_or(0.0) as f32;
+    let humidity = parsed["h"].as_f64().unwrap_or(0.0) as f32;
+    let pressure = parsed["p"].as_f64().unwrap_or(0.0) as f32;
+    let gas = parsed["g"].as_f64().unwrap_or(0.0) as f32;
+
+    Ok((temp, humidity, pressure, gas))
+}
+
 // ==============================================================================
 // led control - ws2812b strip via rpi_ws281x
 // ==============================================================================

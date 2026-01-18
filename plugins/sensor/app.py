@@ -20,18 +20,9 @@ the ALERT LOGIC in this file is HOT-SWAPPABLE:
     - change buzzer patterns
     - rebuild wasm, host auto-reloads without restart
 
-security model:
-    this python code runs in a SANDBOX (wasm). it cannot:
-    - directly access gpio pins
-    - make syscalls
-    - touch the filesystem
-    
-    instead, we call imported capabilities which are handled by
-    the rust host. the host controls exactly what hardware access is allowed.
-
-relationships:
+relations:
     - implements: ../../wit/plugin.wit (sensor-logic)
-    - imports: gpio-provider, led-controller, buzzer-controller (from rust host)
+    - imports: gpio-provider, led_controller, buzzer-controller (from rust host)
     - loaded by: ../../host/src/runtime.rs
     - called by: ../../host/src/main.rs (polling loop)
 
@@ -57,40 +48,31 @@ from wit_world.imports import gpio_provider, led_controller, buzzer_controller
 # ==============================================================================
 # alert thresholds - EDIT THESE AND HOT-RELOAD!
 # ==============================================================================
-# these values control when alerts trigger. change them, rebuild wasm,
-# and the host will auto-reload without restarting.
+# Hysteresis Configuration
+HIGH_ALARM = 30.0
+LOW_ALARM = 15.0
+DEADBAND = 2.0 # hysteresis band (prevents flickering)
 
-TEMP_HIGH = 30.0      # celsius - above this = red leds + buzzer
-TEMP_LOW = 15.0       # celsius - below this = blue leds
-HUMIDITY_HIGH = 80.0  # percent - above this = warning beep
-
+# State variables (persist between polls now!)
+# This works because we upgraded the Host to persist the Python interpreter instance.
+high_alarm_active = False
+low_alarm_active = False
 
 class SensorLogic(SensorLogic):
     """
     implementation of the sensor-logic interface from plugin.wit.
-    
-    this plugin reads REAL data from the dht22 sensor and triggers
-    visual/audio alerts based on thresholds defined above.
-    
-    all alert logic is in this hot-swappable wasm module!
     """
     
     def poll(self) -> list[SensorReading]:
         """
         poll the dht22 sensor, update leds, and trigger alerts.
-        
-        this method:
-        1. reads sensor via gpio_provider
-        2. updates led strip based on temperature
-        3. triggers buzzer on high temp/humidity
-        4. returns reading to host
-        
-        returns:
-            list of sensor readings (typically one for single dht22)
         """
+        global high_alarm_active, low_alarm_active
         
         # get current timestamp via host capability
         timestamp_ms = gpio_provider.get_timestamp_ms()
+        
+        readings = []
         
         # read dht22 sensor via host capability
         try:
@@ -98,78 +80,74 @@ class SensorLogic(SensorLogic):
             
             if isinstance(result, tuple):
                 temperature, humidity = result
+                
+                # -------- High Temperature Alarm Logic (Hysteresis) --------
+                if not high_alarm_active:
+                    if temperature >= HIGH_ALARM:
+                        high_alarm_active = True
+                else:
+                    # Stays active until drops safely below allowed limit
+                    if temperature <= (HIGH_ALARM - DEADBAND):
+                        high_alarm_active = False
+
+                # -------- Low Temperature Alarm Logic --------
+                if not low_alarm_active:
+                    if temperature <= LOW_ALARM:
+                        low_alarm_active = True
+                else:
+                    if temperature >= (LOW_ALARM + DEADBAND):
+                        low_alarm_active = False
+                
+                # -------- Control LEDs based on Sticky State --------
+                cpu_temp = gpio_provider.get_cpu_temp()
+                
+                # CPU Temp Color (LED 0)
+                if cpu_temp > 70.0:
+                    cpu_color = (255, 0, 0)
+                elif cpu_temp > 50.0:
+                    cpu_color = (255, 255, 0)
+                else:
+                    cpu_color = (0, 255, 0)
+
+                # Room Temp Color (LED 1)
+                room_color = (0, 255, 0) # default green
+                
+                if high_alarm_active:
+                    # DANGER: Red
+                    room_color = (255, 0, 0)
+                    buzzer_controller.buzz(50) # Short tick
+                    print(f"🔴 [DANGER] Temp {temperature:.1f}C > Limit {HIGH_ALARM}C")
+                elif low_alarm_active:
+                    # COLD: Blue
+                    room_color = (0, 0, 255)
+                    print(f"🔵 [COLD] Temp {temperature:.1f}C < Limit {LOW_ALARM}C")
+                elif temperature > 25.0:
+                    # Warm: Orange
+                    room_color = (255, 120, 0)
+                    print(f"🟠 [WARM] Temp {temperature:.1f}C")
+                else:
+                    # Normal: Green
+                    print(f"🟢 [OK] Temp {temperature:.1f}C")
+
+                # Set LEDs atomically
+                led_controller.set_two(
+                    cpu_color[0], cpu_color[1], cpu_color[2],
+                    room_color[0], room_color[1], room_color[2]
+                )
+                    
+                # Create reading record
+                reading = SensorReading(
+                    sensor_id="dht22-gpio-4",
+                    temperature=temperature,
+                    humidity=humidity,
+                    timestamp_ms=timestamp_ms
+                )
+                readings.append(reading)
             else:
                 print(f"⚠️ dht22 read error: {result}")
-                return []
                 
         except Exception as e:
-            print(f"⚠️ dht22 exception: {e}")
-            return []
-        
-        # ======================================================================
-        # determine led colors
-        # ======================================================================
-        # we compute colors first, then set both leds atomically to avoid flicker
-        
-        # cpu temperature -> led 0 color
-        cpu_temp = gpio_provider.get_cpu_temp()
-        
-        if cpu_temp > 70.0:
-            cpu_color = (255, 0, 0)  # red = hot cpu
-        elif cpu_temp > 50.0:
-            cpu_color = (255, 255, 0)  # yellow = warm cpu
-        else:
-            cpu_color = (0, 255, 0)  # green = cool cpu
-        
-        # room temperature/humidity -> led 1 color + buzzer
-        if temperature > TEMP_HIGH:
-            room_color = (255, 0, 0)  # red = hot room
-            buzzer_controller.beep(3, 100, 100)
-            status = f"🔴 [ALERT] HIGH TEMP: {temperature:.1f}C (CPU: {cpu_temp:.1f}C)"
+            # return error reading or empty
+            print(f"Error reading sensor: {e}")
             
-        elif temperature < TEMP_LOW:
-            room_color = (0, 0, 255)  # blue = cold room
-            status = f"🔵 [COLD] {temperature:.1f}C (CPU: {cpu_temp:.1f}C)"
-            
-        elif humidity > HUMIDITY_HIGH:
-            room_color = (0, 255, 255)  # cyan = humid
-            buzzer_controller.beep(2, 150, 200)
-            status = f"💧 [HUMID] {humidity:.1f}% (CPU: {cpu_temp:.1f}C)"
-            
-        else:
-            room_color = (0, 255, 0)  # green = normal
-            status = f"🟢 [OK] {temperature:.1f}C, {humidity:.1f}% (CPU: {cpu_temp:.1f}C)"
-        
-        # ======================================================================
-        # set both leds atomically (avoids flicker)
-        # ======================================================================
-        led_controller.set_two(
-            cpu_color[0], cpu_color[1], cpu_color[2],
-            room_color[0], room_color[1], room_color[2]
-        )
-        
-        print(status)
-        
-        # create sensor reading
-        reading = SensorReading(
-            sensor_id="dht22-gpio4",
-            temperature=temperature,
-            humidity=humidity,
-            timestamp_ms=timestamp_ms,
-        )
-        
-        return [reading]
-
-
-# ==============================================================================
-# note on testing
-# ==============================================================================
-# this module cannot be run directly as python because it depends on
-# gpio_provider, led_controller, buzzer_controller which are only
-# available when running inside wasmtime.
-#
-# to test:
-# 1. build: componentize-py -d ../../wit -w sensor-plugin componentize app -o sensor.wasm
-# 2. run host: cd ../../host && cargo run --release
-# 3. check http://localhost:3000 for dashboard
-# 4. to hot-reload: edit thresholds above, rebuild wasm, refresh browser
+        return readings

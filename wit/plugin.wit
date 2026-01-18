@@ -70,6 +70,12 @@ interface gpio-provider {
     // reads from /sys/class/thermal/thermal_zone0/temp
     // useful for monitoring system health and preventing thermal throttling
     get-cpu-temp: func() -> f32;
+    
+    // read bme680 environmental sensor (i2c)
+    //
+    // @param i2c-addr: The I2C address (usually 0x76 or 0x77)
+    // @returns: Result containing (temp_c, hum_%, pres_hpa, gas_kohm) tuple OR error string
+    read-bme680: func(i2c-addr: u8) -> result<tuple<f32, f32, f32, f32>, string>;
 }
 
 // =============================================================================
@@ -158,6 +164,20 @@ interface sensor-logic {
     poll: func() -> list<sensor-reading>;
 }
 
+interface bme680-logic {
+    record bme680-reading {
+        sensor-id: string,
+        temperature: f32,
+        humidity: f32,
+        pressure: f32,
+        gas-resistance: f32,
+        timestamp-ms: u64,
+    }
+
+    // poll the bme680 sensor
+    poll: func() -> list<bme680-reading>;
+}
+
 interface dashboard-logic {
     // render a complete html dashboard page with real sensor data
     // called by the host when a browser hits http://host:3000/
@@ -165,7 +185,9 @@ interface dashboard-logic {
     // @param temperature: room temperature in celsius (from dht22)
     // @param humidity: relative humidity percentage (from dht22)
     // @param cpu-temp: raspberry pi cpu temperature in celsius
-    render: func(temperature: f32, humidity: f32, cpu-temp: f32) -> string;
+    // @param pressure: atmospheric pressure in hPa (optional, -1.0 if missing)
+    // @param gas: gas resistance in KOhms (optional, -1.0 if missing)
+    render: func(dht-temp: f32, dht-hum: f32, bme-temp: f32, bme-hum: f32, cpu-temp: f32, pressure: f32, gas: f32) -> string;
 }
 
 world sensor-plugin {
@@ -173,6 +195,12 @@ world sensor-plugin {
     import led-controller;
     import buzzer-controller;
     export sensor-logic;
+}
+
+world bme680-plugin {
+    import gpio-provider;
+    import led-controller;
+    export bme680-logic;
 }
 
 world dashboard-plugin {
