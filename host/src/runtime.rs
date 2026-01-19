@@ -69,6 +69,15 @@ mod bme680_bindings {
 }
 use bme680_bindings::Bme680Plugin;
 
+mod pi_monitor_bindings {
+    wasmtime::component::bindgen!({
+        path: "../wit",
+        world: "pi-monitor-plugin",
+        async: true,
+    });
+}
+use pi_monitor_bindings::PiMonitorPlugin;
+
 // ==============================================================================
 // host state - provides capabilities to wasm guests
 // ==============================================================================
@@ -210,6 +219,56 @@ impl dht22_bindings::demo::plugin::buzzer_controller::Host for HostState {
 }
 
 // ==============================================================================
+// pi-monitor bindings - gpio-provider and led-controller for pi-monitor plugin
+// ==============================================================================
+
+impl pi_monitor_bindings::demo::plugin::gpio_provider::Host for HostState {
+    async fn read_dht22(&mut self, pin: u8) -> Result<(f32, f32), String> {
+        tokio::task::spawn_blocking(move || gpio::read_dht22(pin))
+            .await
+            .map_err(|e| format!("task join error: {}", e))?
+            .map_err(|e| e.to_string())
+    }
+    
+    async fn get_timestamp_ms(&mut self) -> u64 {
+        gpio::get_timestamp_ms()
+    }
+    
+    async fn get_cpu_temp(&mut self) -> f32 {
+        gpio::get_cpu_temp()
+    }
+    
+    async fn read_bme680(&mut self, i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+        tokio::task::spawn_blocking(move || gpio::read_bme680(i2c_addr))
+            .await
+            .map_err(|e| format!("task join error: {}", e))?
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl pi_monitor_bindings::demo::plugin::led_controller::Host for HostState {
+    async fn set_led(&mut self, index: u8, r: u8, g: u8, b: u8) {
+        tokio::task::spawn_blocking(move || gpio::set_led(index, r, g, b)).await.ok();
+    }
+    
+    async fn set_all(&mut self, r: u8, g: u8, b: u8) {
+        tokio::task::spawn_blocking(move || gpio::set_all_leds(r, g, b)).await.ok();
+    }
+    
+    async fn set_two(&mut self, r0: u8, g0: u8, b0: u8, r1: u8, g1: u8, b1: u8) {
+        tokio::task::spawn_blocking(move || gpio::set_two_leds(r0, g0, b0, r1, g1, b1)).await.ok();
+    }
+    
+    async fn clear(&mut self) {
+        tokio::task::spawn_blocking(move || gpio::clear_leds()).await.ok();
+    }
+
+    async fn sync_leds(&mut self) {
+        tokio::task::spawn_blocking(move || gpio::sync_leds()).await.ok();
+    }
+}
+
+// ==============================================================================
 // plugin metadata - for hot reload tracking
 // ==============================================================================
 
@@ -239,6 +298,7 @@ pub struct WasmRuntime {
     engine: Engine,
     // Shared state via Arc<Mutex> to allow cloning WasmRuntime
     dht22_plugin: Arc<Mutex<Option<PluginState<Dht22Plugin>>>>,
+    pi_monitor_plugin: Arc<Mutex<Option<PluginState<PiMonitorPlugin>>>>,
     dashboard_plugin: Arc<Mutex<Option<PluginState<DashboardPlugin>>>>,
     bme680_plugin: Arc<Mutex<Option<PluginState<Bme680Plugin>>>>,
 }
@@ -302,24 +362,42 @@ impl WasmRuntime {
             .context("failed to instantiate bme680 plugin")?;
         println!("[DEBUG] Loaded bme680 plugin.");
 
+        // 4. Pi Monitor Plugin
+        println!("[DEBUG] Loading pi-monitor plugin...");
+        let pi_monitor_path = path.join("plugins/pi-monitor/pi-monitor.wasm");
+        let pi_monitor_component = Component::from_file(&engine, &pi_monitor_path)
+            .context("failed to load pi-monitor.wasm")?;
+
+        let mut linker = Linker::new(&engine);
+        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        pi_monitor_bindings::PiMonitorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+        
+        let mut store_pi = Store::new(&engine, create_host_state());
+        let pi_monitor_instance = PiMonitorPlugin::instantiate_async(&mut store_pi, &pi_monitor_component, &linker).await
+            .context("failed to instantiate pi-monitor plugin")?;
+        println!("[DEBUG] Loaded pi-monitor plugin.");
+
         Ok(Self {
             engine,
             dht22_plugin: Arc::new(Mutex::new(Some(PluginState {
-                // component: dht22_component,
                 last_modified: SystemTime::now(),
                 path: dht22_path,
                 store: store,
                 instance: dht22_instance,
             }))),
+            pi_monitor_plugin: Arc::new(Mutex::new(Some(PluginState {
+                last_modified: SystemTime::now(),
+                path: pi_monitor_path,
+                store: store_pi,
+                instance: pi_monitor_instance,
+            }))),
             dashboard_plugin: Arc::new(Mutex::new(Some(PluginState {
-                // component: dashboard_component,
                 last_modified: SystemTime::now(),
                 path: dashboard_path,
                 store: store_dash,
                 instance: dashboard_instance,
             }))),
             bme680_plugin: Arc::new(Mutex::new(Some(PluginState {
-                // component: bme680_component,
                 last_modified: SystemTime::now(),
                 path: bme680_path,
                 store: store_bme,
@@ -479,6 +557,21 @@ impl WasmRuntime {
         }).collect())
     }
     
+    /// poll pi monitor for system stats (CPU temp, etc.)
+    /// Returns CPU temperature for use in dashboard
+    pub async fn poll_pi_monitor(&self) -> Result<f32> {
+        let mut guard = self.pi_monitor_plugin.lock().await;
+        let plugin = guard.as_mut()
+            .ok_or_else(|| anyhow!("pi-monitor plugin not loaded"))?;
+        
+        let stats = plugin.instance.demo_plugin_pi_monitor_logic()
+            .call_poll(&mut plugin.store)
+            .await
+            .context("pi-monitor poll failed")?;
+        
+        println!("[PI] CPU: {:.1}°C", stats.cpu_temp);
+        Ok(stats.cpu_temp)
+    }
     /// render dashboard html using the python wasm plugin
     pub async fn render_dashboard(&self, dht_temp: f32, dht_hum: f32, bme_temp: f32, bme_hum: f32, cpu_temp: f32, pressure: f32, gas: f32, iaq: u16) -> Result<String> {
         self.check_hot_reload().await;
