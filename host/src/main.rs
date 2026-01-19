@@ -176,9 +176,7 @@ async fn main() -> Result<()> {
             match runtime.poll_sensors().await {
                 Ok(readings) => {
                     if show_data {
-                        for r in &readings {
-                            println!("[DHT22] Temp: {:.1}°C | Humidity: {:.1}%", r.temperature, r.humidity);
-                        }
+                        // Logging handled by plugin
                     }
                     all_readings.extend(readings);
                 }
@@ -193,18 +191,7 @@ async fn main() -> Result<()> {
             match runtime.poll_bme680().await {
                 Ok(readings) => {
                     if show_data {
-                        for r in &readings {
-                            let iaq = r.iaq_score.unwrap_or(0);
-                            let status = match iaq {
-                                0 => "CALIBRATING",
-                                1..=50 => "Excellent",
-                                51..=100 => "Good",
-                                101..=150 => "Moderate",
-                                _ => "Poor",
-                            };
-                            println!("[BME680] Temp: {:.1}°C | Humidity: {:.1}% | IAQ: {} ({})", 
-                                r.temperature, r.humidity, iaq, status);
-                        }
+                        // Logging handled by plugin
                     }
                     all_readings.extend(readings);
                 }

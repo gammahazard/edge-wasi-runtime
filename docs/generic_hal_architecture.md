@@ -47,6 +47,7 @@ Added to `host/src/gpio.rs`:
 - `i2c_transfer(addr, hex_data, len)` - Uses `rppal::i2c` + `hex` crate
 - `spi_transfer(data)` - Uses `rppal::spi`
 - `uart_read/write/set_baud()` - Uses `rppal::uart`
+- **Docker Support**: `Dockerfile` and `docker-compose.yml` created (Phase 3.7).
 
 Dependencies added:
 - `rppal = "0.19"` (Raspberry Pi HAL)
@@ -61,7 +62,7 @@ During implementation, we found that **some sensors have timing requirements** b
 |--------|-------|----------|
 | **DHT22** | Microsecond bit-banging | Keep host driver (`read_dht22`) |
 | **WS2812B** | 400ns pulse timing | Keep host driver (Python subprocess) |
-| **BME680 Gas** | 100ms delay between trigger/read | Keep host driver (`read_bme680`) |// WASM can't sleep() |
+| **BME680 Gas** | 100ms delay between trigger/read | Keep host driver (`read_bme680`) |
 | **BME680 Temp/Humidity** | No timing issues | ✅ Works with Generic I2C |
 
 ### Key Insight
@@ -74,40 +75,47 @@ During implementation, we found that **some sensors have timing requirements** b
 ### Generic-Friendly Sensors (Verified)
 | Sensor | Protocol | Status |
 |--------|----------|--------|
-| **SSD1306 OLED** | I2C | ✅ Should work (write-only) |
+| **SSD1306 OLED** | I2C | ✅ Implemented (plugins/oled) |
 | **AHT20** | I2C | ✅ Should work |
 | **BMP280** | I2C | ✅ Should work (no gas) |
 | **APA102 / DotStar** | SPI (has clock) | ✅ Should work |
 
-## 5. Security Model (permission.toml) ⏳
+## 5. Phase 4: Decoupled UI (JSON Broadcast) ✅
 
-Giving generic "Raw I/O" (I2C/GPIO) access is powerful but adds risk.
+To enable "Drop & Run" for new sensors, the Dashboard and OLED plugins must not require WIT changes.
 
-**Planned structure:**
-```toml
-[plugins.bme680]
-allowed_i2c = [0x76, 0x77]
-allowed_gpio = []
+**Solution: The "Broadcast" Pattern**
+1. **Host** collects readings -> Serializes to JSON (`serde_json`)
+2. **Host** calls `render(json)` on Dashboard
+3. **Host** calls `update(json)` on OLED
+4. **Plugins** parse JSON and decide what to show
 
-[plugins.oled]
-allowed_i2c = [0x3C, 0x3D]
-```
+**Status**: Implemented.
+- `render: func(sensor-data: string)`
+- `update: func(sensor-data: string)`
+- No Host/WIT recompilation needed for UI changes!
 
-**Status**: Not yet implemented.
+## 6. Phase 5: Security & Dynamic Loading ⏳
 
-## 6. Docker & Containerization Strategy ⏳
+Giving generic "Raw I/O" (I2C/GPIO) access is powerful but adds risk. Also, we want to auto-load plugins.
 
-**Planned command:**
-```bash
-docker run -d \
-  --device /dev/gpiomem \
-  --device /dev/i2c-1 \
-  --device /dev/ttyAMA0 \
-  -v ./host.toml:/app/config/host.toml \
-  wasi-host:latest
-```
+**Planned Architecture:**
 
-**Status**: Not yet implemented.
+1.  **Permission System (`permission.toml`)**:
+    -   Gatekeeper checking every `i2c.transfer()` call.
+    -   Policy: Deny by default.
+    ```toml
+    [plugins.oled]
+    allow_i2c = [0x3C] # ✅ Allowed
+    allow_gpio = []    # ❌ Blocked
+    ```
+
+2.  **Dynamic Discovery**:
+    -   Watch `plugins/` folder.
+    -   Auto-load `.wasm` files.
+    -   Apply permissions from toml immediately.
+
+**Status**: Planned for next phase.
 
 ## 7. Lessons Learned
 
@@ -117,14 +125,7 @@ docker run -d \
 2. **WASM cannot sleep()** - timing-critical operations must stay in host
    - This is a fundamental WASM limitation, not a bug
 
-3. **The Generic HAL still provides value** for:
-   - Read-only sensors (temperature, pressure)
-   - Write-only devices (OLED displays)
+3. **Generic HAL still provides value** for:
+   - Read-only sensors (temp, pressure, light)
+   - Write-only devices (OLED displays, SPI LEDs)
    - Any device without strict timing requirements
-
-## 8. Next Steps
-
-- [ ] Wire config values to hardware functions
-- [ ] Implement permission.toml
-- [ ] Docker support
-- [ ] Verify with OLED display (SSD1306)
