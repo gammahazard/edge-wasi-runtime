@@ -12,88 +12,92 @@ We transform the Host into a "Generalist" (Operating System). It strictly provid
 ### Architecture Shift
 | Layer | Current (Specialist) | Future (Generic HAL) |
 |-------|----------------------|----------------------|
-| **Plugin (Python)** | `host.read_bme680()` | `i2c.write(0x77, [0xF4, 0x27])` |
-| **Interface (WIT)** | `read-bme680: func() -> reading` | `i2c-write: func(addr: u8, bytes: list<u8>)` |
-| **Host (Rust)** | *Hardcoded generic BME680 logic* | *Blindly passes bytes to /dev/i2c-1* |
+| **Plugin (Python)** | `host.read_bme680()` | `i2c.transfer(0x77, "D0", 1)` → `"61"` |
+| **Interface (WIT)** | `read-bme680: func() -> reading` | `transfer: func(addr, hex-data, len) -> hex-string` |
+| **Host (Rust)** | *Hardcoded BME680 logic* | *Blindly passes bytes to /dev/i2c-1* |
 
-## 3. Migration Plan
+## 3. Implementation Status (Phase 3) ✅
 
-### Phase 1: The Generic Interfaces (WIT)
-We define the "syscalls" for our hardware.
+### 3.1 WIT Interfaces
+Added to `wit/plugin.wit`:
 
 ```wit
-interface gpio {
-    enum mode { input, output }
-    set-mode: func(pin: u8, m: mode);
-    write: func(pin: u8, value: bool);
-    read: func(pin: u8) -> bool;
-}
-
 interface i2c {
-    // transaction: write bytes, then read bytes (atomic)
-    transfer: func(addr: u8, write: list<u8>, read-len: u32) -> list<u8>;
+    // Uses hex strings due to componentize-py marshalling limitations
+    // Python: i2c.transfer(0x77, "D0", 1) -> "61"
+    transfer: func(addr: u8, write-data: string, read-len: u32) -> result<string, string>;
 }
 
 interface spi {
-    transfer: func(data: list<u8>) -> list<u8>; // Full duplex
+    transfer: func(data: list<u8>) -> result<list<u8>, string>;
 }
 
 interface uart {
-    // For GPS, Lidar, LoRa modules
-    read: func(max-len: u32) -> list<u8>;
-    write: func(data: list<u8>) -> u32;
-    set-baud: func(rate: u32);
+    read: func(max-len: u32) -> result<list<u8>, string>;
+    write: func(data: list<u8>) -> result<u32, string>;
+    set-baud: func(rate: u32) -> result<tuple<>, string>;
 }
 ```
 
-### Phase 2: Host Implementation (rppal / linux-embedded-hal)
-The Host removes specific driver logic (python scripts) and uses `rppal` (Rust Raspberry Pi HAL) to talk properly to the kernel.
+> **Note**: The `i2c` interface uses **hex-encoded strings** (e.g., `"D0"` instead of `[0xD0]`)
+> due to a componentize-py marshalling issue with `list<u8>` return types.
 
-**New `host/Cargo.toml` dependencies:**
-- `rppal = "0.14"` (GPIO, I2C, SPI, PWM, UART)
+### 3.2 Host Implementation
+Added to `host/src/gpio.rs`:
+- `i2c_transfer(addr, hex_data, len)` - Uses `rppal::i2c` + `hex` crate
+- `spi_transfer(data)` - Uses `rppal::spi`
+- `uart_read/write/set_baud()` - Uses `rppal::uart`
 
-**New `gpio.rs` logic:**
-```rust
-// No more "read_bme680". Just "i2c_transfer".
-pub fn i2c_transfer(addr: u16, data: &[u8]) -> Vec<u8> {
-    let mut i2c = I2c::new().unwrap();
-    i2c.set_slave_address(addr).unwrap();
-    i2c.write(data).unwrap();
-    // ...
-}
-```
+Dependencies added:
+- `rppal = "0.19"` (Raspberry Pi HAL)
+- `hex = "0.4"` (hex encoding/decoding)
 
-### Phase 3: The "Hybrid" Compromise
-**Critical Insight**: Some sensors (DHT22, WS2812B) require microsecond-level timing that WASM (running in a runtime) cannot guarantee.
-- **Strategy**: Keep specific drivers *only* for timing-sensitive hardware.
-- **Result**:
-    - **I2C/SPI/UART Sensors**: Fully generic (Python drivers).
-    - **Timing Critical**: Host extensions (Keep `dht22-provider` interface).
+## 4. The "Hybrid" Compromise
 
-## 4. Security Model (permission.toml)
-Giving generic "Raw I/O" (I2C/GPIO) access is powerful but adds risk. We need a permission system to maintain our high security standards.
+### Critical Discovery
+During implementation, we found that **some sensors have timing requirements** beyond what WASM can provide:
 
-*   **Current Architecture**: **Safe by Design**. Plugins can only call specific, harmless functions (`get_temp`). They cannot access hardware addresses.
-*   **Future Generic HAL**: **Safe by Configuration**. Since we are exposing raw capabilities (`i2c_write`), we will use `permission.toml` to whitelist exactly which sensors a plugin can touch (e.g., "Plugin A can only talk to address 0x77").
+| Sensor | Issue | Solution |
+|--------|-------|----------|
+| **DHT22** | Microsecond bit-banging | Keep host driver (`read_dht22`) |
+| **WS2812B** | 400ns pulse timing | Keep host driver (Python subprocess) |
+| **BME680 Gas** | 100ms delay between trigger/read | Keep host driver (`read_bme680`) |// WASM can't sleep() |
+| **BME680 Temp/Humidity** | No timing issues | ✅ Works with Generic I2C |
 
+### Key Insight
+**WASM cannot call `time.sleep()`**. This means any sensor requiring:
+- Microsecond timing (DHT22, WS2812B)
+- Millisecond delays (BME680 gas heater warmup)
+
+...must remain as host-side drivers.
+
+### Generic-Friendly Sensors (Verified)
+| Sensor | Protocol | Status |
+|--------|----------|--------|
+| **SSD1306 OLED** | I2C | ✅ Should work (write-only) |
+| **AHT20** | I2C | ✅ Should work |
+| **BMP280** | I2C | ✅ Should work (no gas) |
+| **APA102 / DotStar** | SPI (has clock) | ✅ Should work |
+
+## 5. Security Model (permission.toml) ⏳
+
+Giving generic "Raw I/O" (I2C/GPIO) access is powerful but adds risk.
+
+**Planned structure:**
 ```toml
 [plugins.bme680]
-allowed_i2c = [0x76, 0x77] # Can only talk to these addresses
+allowed_i2c = [0x76, 0x77]
 allowed_gpio = []
+
+[plugins.oled]
+allowed_i2c = [0x3C, 0x3D]
 ```
 
-## 5. Cross-Platform Configuration (Host.toml)
-Since device paths differ (Pi 4 vs RevPi), we use config to map them transparently.
+**Status**: Not yet implemented.
 
-**RevPi vs Pi 4 Mapping**:
-*   Pi 4: `i2c_bus = "/dev/i2c-1"`
-*   RevPi: `i2c_bus = "/dev/i2c-0"` (or virtual)
-*   **The Code**: Stays identical. `rppal` handles the BCM2711 register access for both.
+## 6. Docker & Containerization Strategy ⏳
 
-## 6. Docker & Containerization Strategy
-Running this Host in Docker (the ultimate "Run Anywhere") requires passing hardware ownership to the container.
-
-**The Command** (Future state):
+**Planned command:**
 ```bash
 docker run -d \
   --device /dev/gpiomem \
@@ -102,11 +106,25 @@ docker run -d \
   -v ./host.toml:/app/config/host.toml \
   wasi-host:latest
 ```
-*   **WASI Benefit**: The WASM plugins don't care about Docker. They see the same WIT interface.
-*   **Host Responsibility**: The Host binaries (Rust) talk to the mapped `/dev` nodes.
 
-## 7. Benefits for Portfolio
-- Demonstrates **Systems Architecture** (Kernel vs User-space).
-- Shows understanding of **Real-Time Constraints** (Hybrid approach).
-- True "Platform Engineering" vs just script writing.
-- **Microservices-ready**: The Docker strategy aligns with Kubernetes edge deployments.
+**Status**: Not yet implemented.
+
+## 7. Lessons Learned
+
+1. **componentize-py has marshalling issues** with `list<u8>` return types
+   - Workaround: Use hex-encoded strings
+
+2. **WASM cannot sleep()** - timing-critical operations must stay in host
+   - This is a fundamental WASM limitation, not a bug
+
+3. **The Generic HAL still provides value** for:
+   - Read-only sensors (temperature, pressure)
+   - Write-only devices (OLED displays)
+   - Any device without strict timing requirements
+
+## 8. Next Steps
+
+- [ ] Wire config values to hardware functions
+- [ ] Implement permission.toml
+- [ ] Docker support
+- [ ] Verify with OLED display (SSD1306)

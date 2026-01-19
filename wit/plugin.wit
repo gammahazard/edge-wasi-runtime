@@ -197,14 +197,18 @@ interface i2c {
     // Perform an I2C transfer (write then read)
     //
     // @param addr: 7-bit I2C device address (e.g., 0x77 for BME680)
-    // @param write-data: bytes to write to the device (command/register)
+    // @param write-data: hex-encoded bytes to write (e.g., "D0" for register 0xD0)
     // @param read-len: number of bytes to read back from the device
-    // @returns: bytes read from device, or error string
+    // @returns: hex-encoded bytes read from device (e.g., "61" for chip ID)
+    //           or error string
     //
-    // Example: Read BME680 chip ID
-    //   i2c.transfer(0x77, [0xD0], 1) -> [0x61]
+    // NOTE: Uses hex strings for BOTH input and output due to componentize-py
+    //       marshalling limitations with list<u8>.
+    //       Python: i2c.transfer(0x77, "D0", 1) -> "61"
+    //       Decode in Python: bytes.fromhex(result)
+    //       Encode in Python: bytes([0xD0]).hex()
     //
-    transfer: func(addr: u8, write-data: list<u8>, read-len: u32) -> result<list<u8>, string>;
+    transfer: func(addr: u8, write-data: string, read-len: u32) -> result<string, string>;
 }
 
 // -----------------------------------------------------------------------------

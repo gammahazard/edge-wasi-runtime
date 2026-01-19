@@ -1,49 +1,49 @@
 //! ==============================================================================
-//! main.rs - wasi host runtime entry point
+//! main.rs - WASI Host Runtime Entry Point
 //! ==============================================================================
 //!
 //! purpose:
-//!     this is the "landlord" application that hosts python wasm plugins.
-//!     it demonstrates the wasi component model pattern used in production by
-//!     fermyon spin, wasmcloud, and other serverless/edge platforms.
+//!     the "landlord" application that hosts Python WASM plugins.
+//!     demonstrates the WASI Component Model pattern used in production by
+//!     Fermyon Spin, WasmCloud, and other serverless/edge platforms.
 //!
 //! responsibilities:
-//!     - initialize wasmtime engine (wasm execution environment)
-//!     - load python wasm plugins (dht22.wasm, pi-monitor.wasm, bme680.wasm, dashboard.wasm)
-//!     - provide wasi capabilities (stdio, clocks) to sandboxed plugins
-//!     - run polling loop to collect sensor data
-//!     - serve web dashboard with data from wasm-rendered html
-//!     - detect and apply hot reloads when plugins change
+//!     - initialize wasmtime engine (WASM execution environment)
+//!     - load Python WASM plugins: dht22, bme680, pi-monitor, dashboard
+//!     - provide WASI capabilities (stdio, clocks) to sandboxed plugins
+//!     - run polling loop to collect sensor data (configurable interval)
+//!     - serve web dashboard with WASM-rendered HTML
+//!     - hot-reload plugins when .wasm files change
 //!
 //! relationships:
-//!     - uses: runtime.rs (wasm loading, plugin execution, hot reload)
-//!     - reads: ../wit/plugin.wit (interface definitions, via runtime.rs)
-//!     - loads: ../plugins/dht22/dht22.wasm (python dht22 logic)
-//!     - loads: ../plugins/dashboard/dashboard.wasm (python html rendering)
+//!     - uses: runtime.rs (WASM loading, plugin execution, hot reload)
+//!     - uses: config.rs (loads host.toml for runtime configuration)
+//!     - uses: gpio.rs (hardware access via rppal)
+//!     - reads: ../wit/plugin.wit (interface definitions)
+//!     - loads: ../plugins/{dht22,bme680,pi-monitor,dashboard}/*.wasm
 //!
 //! architecture:
 //!
-//!     ┌─────────────────────────────────────────────────────────────┐
-//!     │                    rust host (this file)                     │
-//!     │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-//!     │  │ poll loop   │  │ web server  │  │ hot reload watcher  │  │
-//!     │  │ (2s cycle)  │  │ (port 3000) │  │ (file timestamps)   │  │
-//!     │  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
-//!     │         │                │                    │             │
-//!     │         └────────────────┼────────────────────┘             │
-//!     │                          │                                  │
-//!     │                    ┌─────┴─────┐                            │
-//!     │                    │  runtime  │ <- runtime.rs              │
-//!     │                    └─────┬─────┘                            │
-//!     │     (Clone-able handle to shared engine & plugin state)      │
-//!     └──────────────────────────┼──────────────────────────────────┘
-//!                                │ wit interface
-//!                    ┌───────────┴───────────┐
-//!                    ▼                       ▼
-//!             ┌─────────────┐         ┌─────────────┐
-//!             │ dht22.wasm  │         │ dashboard   │
-//!             │  (python)   │         │   .wasm     │
-//!             └─────────────┘         └─────────────┘
+//!     ┌────────────────────────────────────────────────────────────────┐
+//!     │                    RUST HOST (this file)                        │
+//!     │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐ │
+//!     │  │ Polling Loop │  │ Web Server   │  │ Hot Reload Watcher    │ │
+//!     │  │ (5s default) │  │ (port 3000)  │  │ (file timestamps)     │ │
+//!     │  └──────┬───────┘  └──────┬───────┘  └───────────┬───────────┘ │
+//!     │         └─────────────────┼──────────────────────┘             │
+//!     │                           │                                    │
+//!     │                    ┌──────┴──────┐                             │
+//!     │                    │  runtime.rs │ <- WIT bindings & HAL       │
+//!     │                    └──────┬──────┘                             │
+//!     └───────────────────────────┼────────────────────────────────────┘
+//!                                 │ WIT interfaces
+//!          ┌──────────────┬───────┴───────┬──────────────┐
+//!          ▼              ▼               ▼              ▼
+//!     ┌─────────┐   ┌─────────┐   ┌──────────────┐  ┌───────────┐
+//!     │ dht22   │   │ bme680  │   │ pi-monitor   │  │ dashboard │
+//!     │  .wasm  │   │  .wasm  │   │  .wasm       │  │  .wasm    │
+//!     │ (LED 1) │   │ (LED 2) │   │ (LED 0)      │  │ (UI only) │
+//!     └─────────┘   └─────────┘   └──────────────┘  └───────────┘
 //!
 //! security model:
 //!     plugins run in a sandbox. they CANNOT:
@@ -54,15 +54,15 @@
 //!
 //!     they CAN only:
 //!     - execute pure computation
-//!     - use wasi capabilities explicitly granted (here: stdio, clocks)
-//!     - return data through the wit interface
+//!     - use WASI capabilities explicitly granted (stdio, clocks)
+//!     - call interface functions defined in plugin.wit
 //!
 //! industry usage:
 //!     this architecture is used in production by:
-//!     - fermyon spin: serverless functions with <1ms cold starts
-//!     - shopify functions: sandboxed merchant logic
-//!     - wasmcloud: distributed iot/edge applications
-//!     - cloudflare workers: (moving to component model)
+//!     - Fermyon Spin: serverless functions with <1ms cold starts
+//!     - Shopify Functions: sandboxed merchant logic
+//!     - WasmCloud: distributed IoT/edge applications
+//!     - Cloudflare Workers: (moving to component model)
 //!
 //! ==============================================================================
 
