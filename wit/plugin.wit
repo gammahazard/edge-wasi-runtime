@@ -71,7 +71,9 @@ interface gpio-provider {
     // useful for monitoring system health and preventing thermal throttling
     get-cpu-temp: func() -> f32;
     
-    // read bme680 environmental sensor (i2c)
+    // [DEPRECATED] read bme680 environmental sensor (i2c)
+    // This function will be removed in Phase 4.
+    // Use the generic `i2c.transfer()` interface instead.
     //
     // @param i2c-addr: The I2C address (usually 0x76 or 0x77)
     // @returns: Result containing (temp_c, hum_%, pres_hpa, gas_kohm) tuple OR error string
@@ -173,6 +175,81 @@ interface system-info {
     get-uptime: func() -> u64;
 }
 
+// =============================================================================
+// GENERIC HAL INTERFACES (Phase 3)
+// =============================================================================
+//
+// These interfaces provide raw hardware access for the "Compile Once" model.
+// Instead of sensor-specific functions (read-bme680), plugins use generic
+// bus operations (i2c-transfer) and implement the driver logic in Python.
+//
+// SECURITY NOTE:
+// Raw I/O access is powerful. Use permission.toml to restrict which addresses
+// each plugin can access.
+//
+
+// -----------------------------------------------------------------------------
+// i2c - Inter-Integrated Circuit bus
+// -----------------------------------------------------------------------------
+// Common I2C sensors: BME680, BME280, SHT31, AHT20, OLED (SSD1306), etc.
+//
+interface i2c {
+    // Perform an I2C transfer (write then read)
+    //
+    // @param addr: 7-bit I2C device address (e.g., 0x77 for BME680)
+    // @param write-data: bytes to write to the device (command/register)
+    // @param read-len: number of bytes to read back from the device
+    // @returns: bytes read from device, or error string
+    //
+    // Example: Read BME680 chip ID
+    //   i2c.transfer(0x77, [0xD0], 1) -> [0x61]
+    //
+    transfer: func(addr: u8, write-data: list<u8>, read-len: u32) -> result<list<u8>, string>;
+}
+
+// -----------------------------------------------------------------------------
+// spi - Serial Peripheral Interface
+// -----------------------------------------------------------------------------
+// Common SPI devices: APA102/DotStar LEDs, SD cards, OLED displays, etc.
+//
+interface spi {
+    // Perform a full-duplex SPI transfer
+    //
+    // @param data: bytes to send to the device
+    // @returns: bytes received from device (same length as input)
+    //
+    transfer: func(data: list<u8>) -> result<list<u8>, string>;
+}
+
+// -----------------------------------------------------------------------------
+// uart - Universal Asynchronous Receiver/Transmitter
+// -----------------------------------------------------------------------------
+// Common UART devices: GPS modules, LoRa radios, fingerprint sensors, etc.
+//
+interface uart {
+    // Read bytes from UART buffer
+    //
+    // @param max-len: maximum number of bytes to read
+    // @returns: bytes available in buffer (may be less than max-len)
+    //
+    read: func(max-len: u32) -> result<list<u8>, string>;
+    
+    // Write bytes to UART
+    //
+    // @param data: bytes to send
+    // @returns: number of bytes actually written
+    //
+    write: func(data: list<u8>) -> result<u32, string>;
+    
+    // Set baud rate
+    //
+    // @param rate: baud rate (e.g., 9600, 115200)
+    //
+    set-baud: func(rate: u32) -> result<tuple<>, string>;
+}
+
+
+
 interface dht22-logic {
     record dht22-reading {
         sensor-id: string,
@@ -262,9 +339,26 @@ world pi-monitor-plugin {
 world bme680-plugin {
     import gpio-provider;
     import led-controller;
+    import i2c;  // Generic I2C for future migration
     export bme680-logic;
 }
 
 world dashboard-plugin {
     export dashboard-logic;
 }
+
+// =============================================================================
+// GENERIC PLUGIN WORLDS (Phase 3)
+// =============================================================================
+// These worlds allow writing new sensor drivers without Host recompilation.
+// Plugins import generic bus interfaces and implement driver logic in Python.
+//
+
+world generic-i2c-plugin {
+    import i2c;
+    import led-controller;
+    import system-info;
+    import gpio-provider;  // For timestamp-ms, cpu-temp
+    export bme680-logic;   // Reuse bme680-logic interface for now
+}
+

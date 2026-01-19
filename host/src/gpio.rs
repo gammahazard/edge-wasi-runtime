@@ -234,6 +234,114 @@ except Exception as e:
 }
 
 // ==============================================================================
+// GENERIC HAL - Phase 3 (rppal-based hardware access)
+// ==============================================================================
+//
+// These functions provide raw bus access for the "Compile Once" architecture.
+// Plugins can now implement sensor drivers in Python using these primitives.
+//
+// NOTE: rppal only works on Raspberry Pi. Build will fail on x86/Windows.
+//
+
+/// I2C transfer - write bytes then read bytes (atomic operation)
+///
+/// @param addr: 7-bit I2C device address
+/// @param write_data: bytes to write to device
+/// @param read_len: number of bytes to read back
+/// @returns: bytes read from device
+pub fn i2c_transfer(addr: u8, write_data: &[u8], read_len: u32) -> Result<Vec<u8>> {
+    use rppal::i2c::I2c;
+    
+    let mut i2c = I2c::new()
+        .map_err(|e| anyhow!("Failed to open I2C bus: {}", e))?;
+    
+    i2c.set_slave_address(addr as u16)
+        .map_err(|e| anyhow!("Failed to set I2C address 0x{:02X}: {}", addr, e))?;
+    
+    // Write command/register bytes
+    if !write_data.is_empty() {
+        i2c.write(write_data)
+            .map_err(|e| anyhow!("I2C write failed: {}", e))?;
+    }
+    
+    // Read response bytes
+    if read_len > 0 {
+        let mut buffer = vec![0u8; read_len as usize];
+        i2c.read(&mut buffer)
+            .map_err(|e| anyhow!("I2C read failed: {}", e))?;
+        Ok(buffer)
+    } else {
+        Ok(vec![])
+    }
+}
+
+/// SPI transfer - full duplex send/receive
+///
+/// @param data: bytes to send
+/// @returns: bytes received (same length as input)
+pub fn spi_transfer(data: &[u8]) -> Result<Vec<u8>> {
+    use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
+    
+    let mut spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, 1_000_000, Mode::Mode0)
+        .map_err(|e| anyhow!("Failed to open SPI: {}", e))?;
+    
+    let mut buffer = data.to_vec();
+    spi.transfer(&mut buffer)
+        .map_err(|e| anyhow!("SPI transfer failed: {}", e))?;
+    
+    Ok(buffer)
+}
+
+/// UART read - read available bytes from serial buffer
+///
+/// @param max_len: maximum bytes to read
+/// @returns: bytes available (may be less than max_len)
+pub fn uart_read(max_len: u32) -> Result<Vec<u8>> {
+    use rppal::uart::{Parity, Uart};
+    
+    // Default to primary UART with common settings
+    let mut uart = Uart::new(115_200, Parity::None, 8, 1)
+        .map_err(|e| anyhow!("Failed to open UART: {}", e))?;
+    
+    let mut buffer = vec![0u8; max_len as usize];
+    let bytes_read = uart.read(&mut buffer)
+        .map_err(|e| anyhow!("UART read failed: {}", e))?;
+    
+    buffer.truncate(bytes_read);
+    Ok(buffer)
+}
+
+/// UART write - send bytes to serial port
+///
+/// @param data: bytes to send
+/// @returns: number of bytes actually written
+pub fn uart_write(data: &[u8]) -> Result<u32> {
+    use rppal::uart::{Parity, Uart};
+    
+    let mut uart = Uart::new(115_200, Parity::None, 8, 1)
+        .map_err(|e| anyhow!("Failed to open UART: {}", e))?;
+    
+    let bytes_written = uart.write(data)
+        .map_err(|e| anyhow!("UART write failed: {}", e))?;
+    
+    Ok(bytes_written as u32)
+}
+
+/// UART set baud rate
+///
+/// @param rate: baud rate (e.g., 9600, 115200)
+pub fn uart_set_baud(rate: u32) -> Result<()> {
+    use rppal::uart::{Parity, Uart};
+    
+    let mut uart = Uart::new(rate, Parity::None, 8, 1)
+        .map_err(|e| anyhow!("Failed to set UART baud rate {}: {}", rate, e))?;
+    
+    // Just opening with the new rate is enough to set it
+    drop(uart);
+    Ok(())
+}
+
+// ==============================================================================
 // led control - ws2812b strip via rpi_ws281x
 // ==============================================================================
 //

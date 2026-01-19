@@ -54,3 +54,9 @@ sysinfo = "0.30"
 # TOML - Configuration parsing
 # Reads host.toml for runtime configuration without recompilation.
 toml = "0.8"
+
+# RPPAL - Raspberry Pi Peripheral Access Library
+# Provides direct hardware access to GPIO, I2C, SPI, PWM, and UART.
+# This enables the "Generic HAL" architecture where plugins can use raw I/O.
+# Note: Only works on Raspberry Pi (ARM). Build will fail on x86.
+rppal = "0.19"

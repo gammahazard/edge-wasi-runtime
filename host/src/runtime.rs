@@ -696,3 +696,19 @@ impl bme680_bindings::demo::plugin::led_controller::Host for HostState {
         }).await.ok();
     }
 }
+
+// ==============================================================================
+// i2c implementation for bme680-plugin (Phase 3 Generic HAL)
+// ==============================================================================
+
+impl bme680_bindings::demo::plugin::i2c::Host for HostState {
+    async fn transfer(&mut self, addr: u8, write_data: Vec<u8>, read_len: u32) -> Result<Vec<u8>, String> {
+        tokio::task::spawn_blocking(move || {
+            gpio::i2c_transfer(addr, &write_data, read_len)
+        })
+        .await
+        .map_err(|e| format!("task join error: {}", e))?
+        .map_err(|e| e.to_string())
+    }
+}
+
