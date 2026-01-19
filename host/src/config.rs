@@ -24,6 +24,8 @@ pub struct HostConfig {
     pub leds: LedConfig,
     pub buzzer: BuzzerConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub plugins: PluginsConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -65,6 +67,25 @@ pub struct LoggingConfig {
     pub show_sensor_data: bool,
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PluginEntry {
+    pub enabled: bool,
+    #[serde(default)]
+    pub led: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PluginsConfig {
+    #[serde(default)]
+    pub dht22: PluginEntry,
+    #[serde(default)]
+    pub pi_monitor: PluginEntry,
+    #[serde(default)]
+    pub bme680: PluginEntry,
+    #[serde(default)]
+    pub dashboard: PluginEntry,
+}
+
 impl HostConfig {
     /// Load configuration from file
     pub fn load<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
@@ -104,6 +125,14 @@ impl HostConfig {
         println!("│ LED Count: {} (GPIO {}, bright {})      │", self.leds.count, self.leds.gpio_pin, self.leds.brightness);
         println!("│ Buzzer GPIO: {}                         │", self.buzzer.gpio_pin);
         println!("│ Log Level: {}                        │", self.logging.level);
+        println!("├─────────────────────────────────────────┤");
+        println!("│ Plugins:                                │");
+        println!("│   dht22: {}   pi-monitor: {}            │", 
+            if self.plugins.dht22.enabled { "✓" } else { "✗" },
+            if self.plugins.pi_monitor.enabled { "✓" } else { "✗" });
+        println!("│   bme680: {}  dashboard: {}             │",
+            if self.plugins.bme680.enabled { "✓" } else { "✗" },
+            if self.plugins.dashboard.enabled { "✓" } else { "✗" });
         println!("└─────────────────────────────────────────┘");
     }
 }
@@ -119,6 +148,7 @@ impl Default for HostConfig {
             leds: LedConfig { count: 11, gpio_pin: 18, brightness: 50 },
             buzzer: BuzzerConfig { gpio_pin: 17 },
             logging: LoggingConfig { level: "info".to_string(), show_sensor_data: true },
+            plugins: PluginsConfig::default(),
         }
     }
 }

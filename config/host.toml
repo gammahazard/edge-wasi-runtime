@@ -34,3 +34,23 @@ gpio_pin = 17
 level = "info"
 # Show sensor data in each poll cycle
 show_sensor_data = true
+
+# ==============================================================================
+# Plugin Configuration
+# ==============================================================================
+# Enable/disable plugins without recompiling. Set enabled = false to skip loading.
+
+[plugins.dht22]
+enabled = true
+led = 1
+
+[plugins.pi_monitor]
+enabled = true
+led = 0
+
+[plugins.bme680]
+enabled = true
+led = 2
+
+[plugins.dashboard]
+enabled = true

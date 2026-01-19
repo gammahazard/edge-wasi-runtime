@@ -26,8 +26,11 @@ use crate::gpio;
 use crate::SensorReading;
 
 use anyhow::{Result, Context, anyhow};
-use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store};
+use crate::config::HostConfig;
+use wasmtime::{
+    component::{bindgen, Component, Linker, ResourceTable},
+    Config, Engine, Store,
+};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -305,11 +308,11 @@ pub struct WasmRuntime {
 
 impl WasmRuntime {
     /// create a new wasm runtime and load available plugins
-    pub async fn new(path: PathBuf) -> Result<Self> {
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-        config.async_support(true);
-        let engine = Engine::new(&config)?;
+    pub async fn new(path: PathBuf, config: &HostConfig) -> Result<Self> {
+        let mut wasm_config = Config::new();
+        wasm_config.wasm_component_model(true);
+        wasm_config.async_support(true);
+        let engine = Engine::new(&wasm_config)?;
 
         // --- Helper to init state ---
         let create_host_state = || {
@@ -318,91 +321,119 @@ impl WasmRuntime {
         };
 
         // 1. DHT22 Plugin
-        println!("[DEBUG] Loading dht22 plugin...");
-        let dht22_path = path.join("plugins/dht22/dht22.wasm");
-        let dht22_component = Component::from_file(&engine, &dht22_path)
-            .context("failed to load dht22.wasm")?;
-        
-        let mut linker = Linker::new(&engine);
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        dht22_bindings::Dht22Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
-        
-        let mut store = Store::new(&engine, create_host_state());
-        let dht22_instance = Dht22Plugin::instantiate_async(&mut store, &dht22_component, &linker).await
-            .context("failed to instantiate dht22 plugin")?;
-        println!("[DEBUG] Loaded dht22 plugin.");
-
-        // 2. DASHBOARDPlugin
-        println!("[DEBUG] Loading dashboard plugin...");
-        let dashboard_path = path.join("plugins/dashboard/dashboard.wasm");
-        let dashboard_component = Component::from_file(&engine, &dashboard_path)
-            .context("failed to load dashboard.wasm")?;
+        let dht22_plugin = if config.plugins.dht22.enabled {
+            println!("[DEBUG] Loading dht22 plugin...");
+            let dht22_path = path.join("plugins/dht22/dht22.wasm");
+            let dht22_component = Component::from_file(&engine, &dht22_path)
+                .context("failed to load dht22.wasm")?;
             
-        let mut linker = Linker::new(&engine);
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        // dashboard_bindings::DashboardPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
-        
-        let mut store_dash = Store::new(&engine, create_host_state());
-        let dashboard_instance = DashboardPlugin::instantiate_async(&mut store_dash, &dashboard_component, &linker).await
-            .context("failed to instantiate dashboard plugin")?;
-        println!("[DEBUG] Loaded dashboard plugin.");
-
-        // 3. BME680Plugin
-        println!("[DEBUG] Loading bme680 plugin...");
-        let bme680_path = path.join("plugins/bme680/bme680.wasm");
-        let bme680_component = Component::from_file(&engine, &bme680_path)
-            .context("failed to load bme680.wasm")?;
-
-        let mut linker = Linker::new(&engine);
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        bme680_bindings::Bme680Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
-        
-        let mut store_bme = Store::new(&engine, create_host_state());
-        let bme680_instance = Bme680Plugin::instantiate_async(&mut store_bme, &bme680_component, &linker).await
-            .context("failed to instantiate bme680 plugin")?;
-        println!("[DEBUG] Loaded bme680 plugin.");
-
-        // 4. Pi Monitor Plugin
-        println!("[DEBUG] Loading pi-monitor plugin...");
-        let pi_monitor_path = path.join("plugins/pi-monitor/pi-monitor.wasm");
-        let pi_monitor_component = Component::from_file(&engine, &pi_monitor_path)
-            .context("failed to load pi-monitor.wasm")?;
-
-        let mut linker = Linker::new(&engine);
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        pi_monitor_bindings::PiMonitorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
-        
-        let mut store_pi = Store::new(&engine, create_host_state());
-        let pi_monitor_instance = PiMonitorPlugin::instantiate_async(&mut store_pi, &pi_monitor_component, &linker).await
-            .context("failed to instantiate pi-monitor plugin")?;
-        println!("[DEBUG] Loaded pi-monitor plugin.");
-
-        Ok(Self {
-            engine,
-            dht22_plugin: Arc::new(Mutex::new(Some(PluginState {
+            let mut linker = Linker::new(&engine);
+            wasmtime_wasi::add_to_linker_async(&mut linker)?;
+            dht22_bindings::Dht22Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+            
+            let mut store = Store::new(&engine, create_host_state());
+            let dht22_instance = Dht22Plugin::instantiate_async(&mut store, &dht22_component, &linker).await
+                .context("failed to instantiate dht22 plugin")?;
+            println!("[DEBUG] Loaded dht22 plugin.");
+            
+            Arc::new(Mutex::new(Some(PluginState {
                 last_modified: SystemTime::now(),
                 path: dht22_path,
                 store: store,
                 instance: dht22_instance,
-            }))),
-            pi_monitor_plugin: Arc::new(Mutex::new(Some(PluginState {
-                last_modified: SystemTime::now(),
-                path: pi_monitor_path,
-                store: store_pi,
-                instance: pi_monitor_instance,
-            }))),
-            dashboard_plugin: Arc::new(Mutex::new(Some(PluginState {
+            })))
+        } else {
+            println!("[SKIP] dht22 plugin disabled");
+            Arc::new(Mutex::new(None))
+        };
+
+        // 2. DASHBOARD Plugin
+        let dashboard_plugin = if config.plugins.dashboard.enabled {
+            println!("[DEBUG] Loading dashboard plugin...");
+            let dashboard_path = path.join("plugins/dashboard/dashboard.wasm");
+            let dashboard_component = Component::from_file(&engine, &dashboard_path)
+                .context("failed to load dashboard.wasm")?;
+                
+            let mut linker = Linker::new(&engine);
+            wasmtime_wasi::add_to_linker_async(&mut linker)?;
+            // dashboard_bindings::DashboardPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+            
+            let mut store_dash = Store::new(&engine, create_host_state());
+            let dashboard_instance = DashboardPlugin::instantiate_async(&mut store_dash, &dashboard_component, &linker).await
+                .context("failed to instantiate dashboard plugin")?;
+            println!("[DEBUG] Loaded dashboard plugin.");
+
+            Arc::new(Mutex::new(Some(PluginState {
                 last_modified: SystemTime::now(),
                 path: dashboard_path,
                 store: store_dash,
                 instance: dashboard_instance,
-            }))),
-            bme680_plugin: Arc::new(Mutex::new(Some(PluginState {
+            })))
+        } else {
+            println!("[SKIP] dashboard plugin disabled");
+            Arc::new(Mutex::new(None))
+        };
+
+        // 3. BME680 Plugin
+        let bme680_plugin = if config.plugins.bme680.enabled {
+            println!("[DEBUG] Loading bme680 plugin...");
+            let bme680_path = path.join("plugins/bme680/bme680.wasm");
+            let bme680_component = Component::from_file(&engine, &bme680_path)
+                .context("failed to load bme680.wasm")?;
+
+            let mut linker = Linker::new(&engine);
+            wasmtime_wasi::add_to_linker_async(&mut linker)?;
+            bme680_bindings::Bme680Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+            
+            let mut store_bme = Store::new(&engine, create_host_state());
+            let bme680_instance = Bme680Plugin::instantiate_async(&mut store_bme, &bme680_component, &linker).await
+                .context("failed to instantiate bme680 plugin")?;
+            println!("[DEBUG] Loaded bme680 plugin.");
+            
+            Arc::new(Mutex::new(Some(PluginState {
                 last_modified: SystemTime::now(),
                 path: bme680_path,
                 store: store_bme,
                 instance: bme680_instance,
-            }))),
+            })))
+        } else {
+             println!("[SKIP] bme680 plugin disabled");
+             Arc::new(Mutex::new(None))
+        };
+
+        // 4. Pi Monitor Plugin
+        let pi_monitor_plugin = if config.plugins.pi_monitor.enabled {
+            println!("[DEBUG] Loading pi-monitor plugin...");
+            let pi_monitor_path = path.join("plugins/pi-monitor/pi-monitor.wasm");
+            let pi_monitor_component = Component::from_file(&engine, &pi_monitor_path)
+                .context("failed to load pi-monitor.wasm")?;
+
+            let mut linker = Linker::new(&engine);
+            wasmtime_wasi::add_to_linker_async(&mut linker)?;
+            pi_monitor_bindings::PiMonitorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+            
+            let mut store_pi = Store::new(&engine, create_host_state());
+            let pi_monitor_instance = PiMonitorPlugin::instantiate_async(&mut store_pi, &pi_monitor_component, &linker).await
+                .context("failed to instantiate pi-monitor plugin")?;
+            println!("[DEBUG] Loaded pi-monitor plugin.");
+            
+            Arc::new(Mutex::new(Some(PluginState {
+                last_modified: SystemTime::now(),
+                path: pi_monitor_path,
+                store: store_pi,
+                instance: pi_monitor_instance,
+            })))
+        } else {
+             println!("[SKIP] pi-monitor plugin disabled");
+             Arc::new(Mutex::new(None))
+        };
+
+        Ok(Self {
+            engine,
+            dht22_plugin,
+            pi_monitor_plugin,
+            dashboard_plugin,
+            bme680_plugin,
         })
     }
     
