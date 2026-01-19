@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
     let runtime = match runtime::WasmRuntime::new(std::path::PathBuf::from("..")).await {
         Ok(r) => {
             println!("[STARTUP] ✓ WASM runtime ready");
-            println!("[STARTUP] ✓ Loaded plugins: sensor, bme680, dashboard");
+            println!("[STARTUP] ✓ Loaded plugins: dht22, bme680, dashboard");
             r
         }
         Err(e) => {

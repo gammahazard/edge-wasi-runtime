@@ -12,11 +12,12 @@ The `.wit` file is the source of truth. It defines:
 2.  **Exports**: Functions the Guest *provides* to the Host (e.g., `sensor-logic.poll`, `bme680-logic.poll`).
 
 ### Current Plugins
-| Plugin | World | Role |
-|--------|-------|------|
-| `sensor` | `sensor-plugin` | Reads DHT22, controls LED 0-1, handles temperature alarms |
-| `bme680` | `bme680-plugin` | Reads BME680, calculates IAQ score, controls LED 2 |
-| `dashboard` | `dashboard-plugin` | Renders HTML dashboard (pure templating, no hardware access) |
+| Plugin | World | Role | LED |
+|--------|-------|------|-----|
+| `dht22` | `dht22-plugin` | Reads DHT22, controls LED 1 (room temp) | 1 |
+| `pi-monitor` | `pi-monitor-plugin` | Reads CPU temp, controls LED 0 (system health) | 0 |
+| `bme680` | `bme680-plugin` | Reads BME680, calculates IAQ, controls LED 2 | 2 |
+| `dashboard` | `dashboard-plugin` | Renders HTML dashboard (no hardware access) | - |
 
 ## Configuration (`config/host.toml`)
 

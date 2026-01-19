@@ -42,14 +42,14 @@ use tokio::sync::Mutex;
 // - rust traits for wit interfaces
 // - Host trait for gpio-provider that we must implement
 
-mod sensor_bindings {
+mod dht22_bindings {
     wasmtime::component::bindgen!({
         path: "../wit",
-        world: "sensor-plugin",
+        world: "dht22-plugin",
         async: true,
     });
 }
-use sensor_bindings::SensorPlugin;
+use dht22_bindings::Dht22Plugin;
 
 mod dashboard_bindings {
     wasmtime::component::bindgen!({
@@ -94,7 +94,7 @@ impl WasiView for HostState {
 // when the python wasm plugin calls gpio_provider.read_dht22(4), it comes here.
 // WE control what hardware access is allowed.
 
-impl sensor_bindings::demo::plugin::gpio_provider::Host for HostState {
+impl dht22_bindings::demo::plugin::gpio_provider::Host for HostState {
     /// read dht22 sensor - called by python wasm plugin
     ///
     /// this is the CAPABILITY boundary. the sandboxed python code calls
@@ -145,7 +145,7 @@ impl sensor_bindings::demo::plugin::gpio_provider::Host for HostState {
 //     - implements: ../wit/plugin.wit (led-controller interface)
 //     - calls: gpio.rs (set_led, set_all_leds, clear_leds)
 
-impl sensor_bindings::demo::plugin::led_controller::Host for HostState {
+impl dht22_bindings::demo::plugin::led_controller::Host for HostState {
     /// set a single led to an rgb color
     async fn set_led(&mut self, index: u8, r: u8, g: u8, b: u8) {
         tokio::task::spawn_blocking(move || {
@@ -193,7 +193,7 @@ impl sensor_bindings::demo::plugin::led_controller::Host for HostState {
 //     - implements: ../wit/plugin.wit (buzzer-controller interface)
 //     - calls: gpio.rs (buzz, beep)
 
-impl sensor_bindings::demo::plugin::buzzer_controller::Host for HostState {
+impl dht22_bindings::demo::plugin::buzzer_controller::Host for HostState {
     /// sound the buzzer for a duration
     async fn buzz(&mut self, duration_ms: u32) {
         tokio::task::spawn_blocking(move || {
@@ -238,7 +238,7 @@ impl<T> PluginState<T> {
 pub struct WasmRuntime {
     engine: Engine,
     // Shared state via Arc<Mutex> to allow cloning WasmRuntime
-    sensor_plugin: Arc<Mutex<Option<PluginState<SensorPlugin>>>>,
+    dht22_plugin: Arc<Mutex<Option<PluginState<Dht22Plugin>>>>,
     dashboard_plugin: Arc<Mutex<Option<PluginState<DashboardPlugin>>>>,
     bme680_plugin: Arc<Mutex<Option<PluginState<Bme680Plugin>>>>,
 }
@@ -257,20 +257,20 @@ impl WasmRuntime {
              HostState { ctx: wasi, table: ResourceTable::new() }
         };
 
-        // 1. SENSORPlugin
-        println!("[DEBUG] Loading sensor plugin...");
-        let sensor_path = path.join("plugins/sensor/sensor.wasm");
-        let sensor_component = Component::from_file(&engine, &sensor_path)
-            .context("failed to load sensor.wasm")?;
+        // 1. DHT22 Plugin
+        println!("[DEBUG] Loading dht22 plugin...");
+        let dht22_path = path.join("plugins/dht22/dht22.wasm");
+        let dht22_component = Component::from_file(&engine, &dht22_path)
+            .context("failed to load dht22.wasm")?;
         
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
-        sensor_bindings::SensorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+        dht22_bindings::Dht22Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
         
         let mut store = Store::new(&engine, create_host_state());
-        let sensor_instance = SensorPlugin::instantiate_async(&mut store, &sensor_component, &linker).await
-            .context("failed to instantiate sensor plugin")?;
-        println!("[DEBUG] Loaded sensor plugin.");
+        let dht22_instance = Dht22Plugin::instantiate_async(&mut store, &dht22_component, &linker).await
+            .context("failed to instantiate dht22 plugin")?;
+        println!("[DEBUG] Loaded dht22 plugin.");
 
         // 2. DASHBOARDPlugin
         println!("[DEBUG] Loading dashboard plugin...");
@@ -304,12 +304,12 @@ impl WasmRuntime {
 
         Ok(Self {
             engine,
-            sensor_plugin: Arc::new(Mutex::new(Some(PluginState {
-                // component: sensor_component,
+            dht22_plugin: Arc::new(Mutex::new(Some(PluginState {
+                // component: dht22_component,
                 last_modified: SystemTime::now(),
-                path: sensor_path,
+                path: dht22_path,
                 store: store,
-                instance: sensor_instance,
+                instance: dht22_instance,
             }))),
             dashboard_plugin: Arc::new(Mutex::new(Some(PluginState {
                 // component: dashboard_component,
@@ -335,14 +335,14 @@ impl WasmRuntime {
              HostState { ctx: wasi, table: ResourceTable::new() }
         };
 
-        // 1. SENSOR
+        // 1. DHT22
         let needs_reload = {
-            let guard = self.sensor_plugin.lock().await;
+            let guard = self.dht22_plugin.lock().await;
             guard.as_ref().map(|p| p.needs_reload()).unwrap_or(false)
         };
         if needs_reload {
-             println!("[HOT RELOAD] Reloading sensor plugin...");
-             { let mut guard = self.sensor_plugin.lock().await;
+             println!("[HOT RELOAD] Reloading dht22 plugin...");
+             { let mut guard = self.dht22_plugin.lock().await;
                  if let Some(old) = guard.as_ref() {
                      let path = old.path.clone();
                      
@@ -351,18 +351,18 @@ impl WasmRuntime {
                      // Since we hold the lock, we must be fast or careful. 
                      // But we are in async fn, so we can await.
                      // type annotation needed for async block
-                     let res: Result<PluginState<SensorPlugin>> = async {
+                     let res: Result<PluginState<Dht22Plugin>> = async {
                          let component = Component::from_file(&self.engine, &path)?;
                          let mut linker = Linker::new(&self.engine);
                          wasmtime_wasi::add_to_linker_async(&mut linker)?;
-                         sensor_bindings::SensorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+                         dht22_bindings::Dht22Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
                          let mut store = Store::new(&self.engine, create_host_state());
-                         let instance = SensorPlugin::instantiate_async(&mut store, &component, &linker).await?;
+                         let instance = Dht22Plugin::instantiate_async(&mut store, &component, &linker).await?;;
                          Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
                      }.await;
                      
                      match res {
-                         Ok(new_state) => { *guard = Some(new_state); println!("[OK] Sensor reloaded"); }
+                         Ok(new_state) => { *guard = Some(new_state); println!("[OK] DHT22 reloaded"); }
                          Err(e) => println!("[ERR] Sensor reload failed: {:#}", e),
                      }
                  }
@@ -428,20 +428,20 @@ impl WasmRuntime {
         }
     }
     
-    /// poll sensors by calling the python wasm plugin
+    /// poll dht22 sensor by calling the python wasm plugin
     pub async fn poll_sensors(&self) -> Result<Vec<SensorReading>> {
         self.check_hot_reload().await;
         
         // get component clone safely
-        let mut guard = self.sensor_plugin.lock().await;
+        let mut guard = self.dht22_plugin.lock().await;
         let plugin = guard.as_mut()
-            .ok_or_else(|| anyhow!("sensor plugin not loaded"))?;
+            .ok_or_else(|| anyhow!("dht22 plugin not loaded"))?;
         
         // Call the poll function using persistent store
-        let readings = plugin.instance.demo_plugin_sensor_logic()
+        let readings = plugin.instance.demo_plugin_dht22_logic()
             .call_poll(&mut plugin.store)
             .await
-            .context("poll failed")?;
+            .context("dht22 poll failed")?;
         
         // convert to our types
         Ok(readings.into_iter().map(|r| SensorReading {
