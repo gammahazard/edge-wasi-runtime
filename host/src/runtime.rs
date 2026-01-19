@@ -28,7 +28,7 @@ use crate::SensorReading;
 use anyhow::{Result, Context, anyhow};
 use crate::config::HostConfig;
 use wasmtime::{
-    component::{bindgen, Component, Linker, ResourceTable},
+    component::{Component, Linker, ResourceTable},
     Config, Engine, Store,
 };
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
