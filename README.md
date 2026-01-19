@@ -198,7 +198,8 @@ To run this demo, you need:
     *   **SDA** → GPIO 2 (Pin 3)
     *   **SCL** → GPIO 3 (Pin 5)
 
-> **Configuration**: GPIO pins and poll intervals are set in `config/host.toml`. Edit this file to change behavior without recompiling.
+> **Configuration**: GPIO pins, poll intervals, and **active plugins** are set in `config/host.toml`. You can enable/disable plugins at runtime without recompiling!
+
 
 ## 💡 Why This Architecture Matters
 
@@ -272,9 +273,13 @@ interface gpio-provider {
 }
 
 // The PLUGIN implements this, host calls it
-interface sensor-logic {
-    poll: func() -> list<sensor-reading>;
+interface dht22-logic {
+    poll: func() -> list<dht22-reading>;
 }
+interface pi-monitor-logic {
+    poll: func() -> pi-stats;
+}
+
 ```
 
 **Why highlight this?**
@@ -287,14 +292,16 @@ interface sensor-logic {
 
 ```python
 # app.py (runs in WASM sandbox)
+from wit_world import Dht22Logic
 from wit_world.imports import gpio_provider
+from wit_world.types import Dht22Reading
 
-class SensorLogic(SensorLogic):
-    def poll(self) -> list[SensorReading]:
+class Dht22Logic(Dht22Logic):
+    def poll(self) -> list[Dht22Reading]:
         # This calls the RUST HOST which reads the actual hardware
         temperature, humidity = gpio_provider.read_dht22(4)
         
-        return [SensorReading(
+        return [Dht22Reading(
             sensor_id="dht22-gpio4",
             temperature=temperature,
             humidity=humidity,
@@ -334,7 +341,7 @@ cd host && cargo run --release
 
 # Terminal 2: Edit and rebuild
 vim ../plugins/sensor/app.py  # Make changes
-componentize-py -d ../../wit -w sensor-plugin componentize app -o sensor.wasm
+componentize-py -d ../../wit -w dht22-plugin componentize app -o dht22.wasm
 
 # The host detects the change and reloads automatically!
 ```

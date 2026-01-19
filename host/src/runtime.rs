@@ -17,7 +17,7 @@
 //!     - reads: ../wit/plugin.wit (interface definitions)
 //!     - implements: gpio-provider interface (via GpioProviderImports trait)
 //!     - uses: gpio.rs (actual hardware access)
-//!     - loads: ../plugins/sensor/sensor.wasm (python sensor logic)
+//!     - loads: ../plugins/dht22/dht22.wasm (python dht22 logic)
 //!     - loads: ../plugins/dashboard/dashboard.wasm (python ui rendering)
 //!
 //! ==============================================================================
