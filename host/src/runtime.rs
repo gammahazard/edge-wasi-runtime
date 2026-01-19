@@ -665,7 +665,7 @@ impl WasmRuntime {
             .await
             .context("pi-monitor poll failed")?;
         
-        println!("[PI] CPU: {:.1}°C", stats.cpu_temp);
+
         Ok(stats.cpu_temp)
     }
     /// render dashboard html using the python wasm plugin
