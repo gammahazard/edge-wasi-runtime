@@ -26,7 +26,7 @@ build command:
 
 from wit_world.exports import PiMonitorLogic
 from wit_world.exports.pi_monitor_logic import PiStats
-from wit_world.imports import gpio_provider, led_controller
+from wit_world.imports import gpio_provider, led_controller, system_info
 
 
 # ==============================================================================
@@ -51,6 +51,11 @@ class PiMonitorLogic(PiMonitorLogic):
         # Get CPU temperature via host capability
         cpu_temp = gpio_provider.get_cpu_temp()
         
+        # Get generic system stats via new capability
+        cpu_usage = system_info.get_cpu_usage()
+        used_mb, total_mb = system_info.get_memory_usage()
+        uptime = system_info.get_uptime()
+        
         # Control LED 0 based on CPU temp
         if cpu_temp > CPU_TEMP_HOT:
             led_controller.set_led(0, 255, 0, 0)  # Red - HOT
@@ -60,16 +65,13 @@ class PiMonitorLogic(PiMonitorLogic):
             print(f"🟡 [PI] CPU Warm: {cpu_temp:.1f}°C")
         else:
             led_controller.set_led(0, 0, 255, 0)  # Green - cool
-            print(f"🟢 [PI] CPU OK: {cpu_temp:.1f}°C")
+            print(f"🟢 [PI] OK | CPU: {cpu_temp:.1f}°C ({cpu_usage:.1f}%) | RAM: {used_mb}/{total_mb}MB | Up: {uptime}s")
         
-        # Return stats
-        # Note: memory/cpu-usage not yet implemented in host gpio-provider
-        # Future enhancement: add get-memory-info() and get-cpu-usage() to WIT
         return PiStats(
             cpu_temp=cpu_temp,
-            cpu_usage=0.0,  # TODO: implement in host
-            memory_used_mb=0,  # TODO: implement in host
-            memory_total_mb=0,  # TODO: implement in host
-            uptime_seconds=0,  # TODO: implement in host
+            cpu_usage=cpu_usage,
+            memory_used_mb=used_mb,
+            memory_total_mb=total_mb,
+            uptime_seconds=uptime,
             timestamp_ms=timestamp_ms
         )

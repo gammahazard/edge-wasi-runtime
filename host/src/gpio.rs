@@ -26,6 +26,19 @@
 
 use anyhow::{Result, anyhow};
 use std::sync::{Mutex, OnceLock};
+use sysinfo::{System, Networks, NetworksExt, ProcessExt, SystemExt, CpuExt};
+
+// Singleton for system stats
+// Why generic? So plugins can ask "how much ram?" without knowing it's Linux
+static SYSTEM_MONITOR: OnceLock<Mutex<System>> = OnceLock::new();
+
+fn get_system() -> &'static Mutex<System> {
+    SYSTEM_MONITOR.get_or_init(|| {
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        Mutex::new(sys)
+    })
+}
 
 /// read dht22 temperature and humidity sensor
 ///
@@ -113,6 +126,31 @@ pub fn get_cpu_temp() -> f32 {
         .and_then(|s| s.trim().parse::<f32>().ok())
         .map(|t| t / 1000.0)  // convert millidegrees to degrees
         .unwrap_or(0.0)
+}
+
+/// get generic cpu usage (average % across all cores)
+pub fn get_sys_cpu_usage() -> f32 {
+    let mutex = get_system();
+    let mut sys = mutex.lock().unwrap();
+    sys.refresh_cpu(); // minimal refresh
+    sys.global_cpu_info().cpu_usage()
+}
+
+/// get memory usage (used_mb, total_mb)
+pub fn get_memory_usage() -> (u32, u32) {
+    let mutex = get_system();
+    let mut sys = mutex.lock().unwrap();
+    sys.refresh_memory();
+    let used_mb = (sys.used_memory() / 1024 / 1024) as u32;
+    let total_mb = (sys.total_memory() / 1024 / 1024) as u32;
+    (used_mb, total_mb)
+}
+
+/// get system uptime in seconds
+pub fn get_uptime() -> u64 {
+    let mutex = get_system();
+    let sys = mutex.lock().unwrap();
+    sys.uptime()
 }
 
 /// read bme680 environmental sensor via python subprocess

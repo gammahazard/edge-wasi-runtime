@@ -154,6 +154,25 @@ interface buzzer-controller {
     beep: func(count: u8, duration-ms: u32, interval-ms: u32);
 }
 
+// =============================================================================
+// system-info - generic system statistics
+// =============================================================================
+//
+// provides safe access to host metrics like memory usage and cpu load.
+// reliable and agnostic to the underlying os (linux/mac/windows).
+//
+interface system-info {
+    // get current memory usage
+    // @returns: (used_mb, total_mb)
+    get-memory-usage: func() -> tuple<u32, u32>;
+
+    // get current cpu load (average percentage across all cores)
+    get-cpu-usage: func() -> f32;
+
+    // get system uptime in seconds
+    get-uptime: func() -> u64;
+}
+
 interface dht22-logic {
     record dht22-reading {
         sensor-id: string,
@@ -233,6 +252,7 @@ world dht22-plugin {
 world pi-monitor-plugin {
     import gpio-provider;
     import led-controller;
+    import system-info;
     export pi-monitor-logic;
 }
 
