@@ -271,6 +271,27 @@ impl pi_monitor_bindings::demo::plugin::led_controller::Host for HostState {
     }
 }
 
+impl pi_monitor_bindings::demo::plugin::system_info::Host for HostState {
+    async fn get_memory_usage(&mut self) -> (u32, u32) {
+        // (used_mb, total_mb)
+        tokio::task::spawn_blocking(move || gpio::get_memory_usage())
+            .await
+            .unwrap_or((0, 0))
+    }
+
+    async fn get_cpu_usage(&mut self) -> f32 {
+        tokio::task::spawn_blocking(move || gpio::get_sys_cpu_usage())
+            .await
+            .unwrap_or(0.0)
+    }
+
+    async fn get_uptime(&mut self) -> u64 {
+        tokio::task::spawn_blocking(move || gpio::get_uptime())
+            .await
+            .unwrap_or(0)
+    }
+}
+
 // ==============================================================================
 // plugin metadata - for hot reload tracking
 // ==============================================================================

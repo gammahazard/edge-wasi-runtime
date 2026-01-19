@@ -47,6 +47,10 @@ serde_json = "1"
 # Watches plugin files and triggers reload when they change.
 notify = "6"
 
+# SYSINFO - System statistics
+# Used to read memory usage, CPU load, and uptime for the pi-monitor plugin.
+sysinfo = "0.30"
+
 # TOML - Configuration parsing
 # Reads host.toml for runtime configuration without recompilation.
 toml = "0.8"
