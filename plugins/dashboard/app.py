@@ -19,17 +19,50 @@ design:
 
 import wit_world
 from wit_world.exports import DashboardLogic
+import json
 
 
 class DashboardLogic(DashboardLogic):
     """
     implementation of the dashboard-logic interface from plugin.wit.
+    
+    Phase 4: Now accepts JSON string instead of typed parameters.
+    This allows adding new sensors without modifying WIT or recompiling!
     """
     
-    def render(self, dht_temp: float, dht_hum: float, bme_temp: float, bme_hum: float, cpu_temp: float, memory_used_mb: int, memory_total_mb: int, uptime_seconds: int, pressure: float, gas: float, iaq: int) -> str:
+    def render(self, sensor_data: str) -> str:
         """
         Render the HTML dashboard with sensor data.
+        
+        Args:
+            sensor_data: JSON string with format:
+                {
+                    "dht22": {"temp": 22.5, "humidity": 45.0},
+                    "bme680": {"temp": 23.0, "humidity": 40.0, "pressure": 1013.25, "gas": 50.0, "iaq": 25},
+                    "pi": {"cpu_temp": 55.0, "memory_used_mb": 1500, "memory_total_mb": 4000, "uptime_seconds": 12345}
+                }
         """
+        # Parse JSON data
+        data = json.loads(sensor_data)
+        
+        # Extract values with defaults
+        dht = data.get("dht22", {})
+        dht_temp = dht.get("temp", 0.0)
+        dht_hum = dht.get("humidity", 0.0)
+        
+        bme = data.get("bme680", {})
+        bme_temp = bme.get("temp", 0.0)
+        bme_hum = bme.get("humidity", 0.0)
+        pressure = bme.get("pressure", -1.0)
+        gas = bme.get("gas", -1.0)
+        iaq = bme.get("iaq", 0)
+        
+        pi = data.get("pi", {})
+        cpu_temp = pi.get("cpu_temp", 0.0)
+        memory_used_mb = pi.get("memory_used_mb", 0)
+        memory_total_mb = pi.get("memory_total_mb", 0)
+        uptime_seconds = pi.get("uptime_seconds", 0)
+        
         # Determine Status Colors
         dht_status = "ok" if dht_temp < 28.0 else "danger"
         bme_status = "ok" if iaq < 100 else "warning" if iaq < 200 else "danger"

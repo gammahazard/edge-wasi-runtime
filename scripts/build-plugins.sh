@@ -47,6 +47,13 @@ cd "$ROOT_DIR/plugins/dashboard"
 componentize-py -d ../../wit -w dashboard-plugin componentize app -o dashboard.wasm
 echo "✅ dashboard.wasm created"
 
+# Build OLED plugin
+echo ""
+echo "📺 Building OLED plugin..."
+cd "$ROOT_DIR/plugins/oled"
+componentize-py -d ../../wit -w oled-plugin componentize app -o oled.wasm
+echo "✅ oled.wasm created"
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🎉 All plugins built successfully!"

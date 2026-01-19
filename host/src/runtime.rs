@@ -87,6 +87,15 @@ mod pi_monitor_bindings {
 }
 use pi_monitor_bindings::PiMonitorPlugin;
 
+mod oled_bindings {
+    wasmtime::component::bindgen!({
+        path: "../wit",
+        world: "oled-plugin",
+        async: true,
+    });
+}
+use oled_bindings::OledPlugin;
+
 // ==============================================================================
 // host state - provides capabilities to wasm guests
 // ==============================================================================
@@ -331,6 +340,7 @@ pub struct WasmRuntime {
     pi_monitor_plugin: Arc<Mutex<Option<PluginState<PiMonitorPlugin>>>>,
     dashboard_plugin: Arc<Mutex<Option<PluginState<DashboardPlugin>>>>,
     bme680_plugin: Arc<Mutex<Option<PluginState<Bme680Plugin>>>>,
+    oled_plugin: Arc<Mutex<Option<PluginState<OledPlugin>>>>,
 }
 
 impl WasmRuntime {
@@ -455,12 +465,40 @@ impl WasmRuntime {
              Arc::new(Mutex::new(None))
         };
 
+        // 5. OLED Plugin
+        let oled_plugin = if config.plugins.oled.enabled {
+            println!("[DEBUG] Loading oled plugin...");
+            let oled_path = path.join("plugins/oled/oled.wasm");
+            let oled_component = Component::from_file(&engine, &oled_path)
+                .context("failed to load oled.wasm")?;
+
+            let mut linker = Linker::new(&engine);
+            wasmtime_wasi::add_to_linker_async(&mut linker)?;
+            oled_bindings::OledPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+            
+            let mut store_oled = Store::new(&engine, create_host_state());
+            let oled_instance = OledPlugin::instantiate_async(&mut store_oled, &oled_component, &linker).await
+                .context("failed to instantiate oled plugin")?;
+            println!("[DEBUG] Loaded oled plugin.");
+            
+            Arc::new(Mutex::new(Some(PluginState {
+                last_modified: SystemTime::now(),
+                path: oled_path,
+                store: store_oled,
+                instance: oled_instance,
+            })))
+        } else {
+             println!("[SKIP] oled plugin disabled");
+             Arc::new(Mutex::new(None))
+        };
+
         Ok(Self {
             engine,
             dht22_plugin,
             pi_monitor_plugin,
             dashboard_plugin,
             bme680_plugin,
+            oled_plugin,
         })
     }
     
@@ -631,7 +669,10 @@ impl WasmRuntime {
         Ok(stats.cpu_temp)
     }
     /// render dashboard html using the python wasm plugin
-    pub async fn render_dashboard(&self, dht_temp: f32, dht_hum: f32, bme_temp: f32, bme_hum: f32, cpu_temp: f32, memory_used: u32, memory_total: u32, uptime: u64, pressure: f32, gas: f32, iaq: u16) -> Result<String> {
+    /// 
+    /// Takes a JSON string containing all sensor data.
+    /// This allows adding new sensors without modifying this function.
+    pub async fn render_dashboard(&self, sensor_data: &str) -> Result<String> {
         self.check_hot_reload().await;
         
         let mut guard = self.dashboard_plugin.lock().await;
@@ -639,11 +680,26 @@ impl WasmRuntime {
             .ok_or_else(|| anyhow!("dashboard plugin not loaded"))?;
         
         let html = plugin.instance.demo_plugin_dashboard_logic()
-            .call_render(&mut plugin.store, dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, memory_used, memory_total, uptime, pressure, gas, iaq)
+            .call_render(&mut plugin.store, sensor_data)
             .await
             .context("dashboard render() failed")?;
         
         Ok(html)
+    }
+
+    /// update oled display with latest sensor data
+    pub async fn update_oled(&self, sensor_data: &str) -> Result<()> {
+        self.check_hot_reload().await;
+        
+        let mut guard = self.oled_plugin.lock().await;
+        if let Some(plugin) = guard.as_mut() {
+            plugin.instance.demo_plugin_oled_logic()
+                .call_update(&mut plugin.store, sensor_data)
+                .await
+                .context("oled update() failed")?;
+        }
+        
+        Ok(())
     }
 }
 
@@ -708,6 +764,20 @@ impl bme680_bindings::demo::plugin::led_controller::Host for HostState {
 // ==============================================================================
 
 impl bme680_bindings::demo::plugin::i2c::Host for HostState {
+    async fn transfer(&mut self, addr: u8, write_data_hex: String, read_len: u32) -> Result<String, String> {
+        tokio::task::spawn_blocking(move || {
+            gpio::i2c_transfer(addr, &write_data_hex, read_len)
+        })
+        .await
+        .map_err(|e| format!("task join error: {}", e))?
+        .map_err(|e| e.to_string())
+    }
+}
+
+// ==============================================================================
+// OLED BINDINGS IMPLEMENTATION
+// ==============================================================================
+impl oled_bindings::demo::plugin::i2c::Host for HostState {
     async fn transfer(&mut self, addr: u8, write_data_hex: String, read_len: u32) -> Result<String, String> {
         tokio::task::spawn_blocking(move || {
             gpio::i2c_transfer(addr, &write_data_hex, read_len)
