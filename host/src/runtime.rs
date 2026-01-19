@@ -357,7 +357,7 @@ impl WasmRuntime {
                          wasmtime_wasi::add_to_linker_async(&mut linker)?;
                          dht22_bindings::Dht22Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
                          let mut store = Store::new(&self.engine, create_host_state());
-                         let instance = Dht22Plugin::instantiate_async(&mut store, &component, &linker).await?;;
+                         let instance = Dht22Plugin::instantiate_async(&mut store, &component, &linker).await?;
                          Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
                      }.await;
                      
