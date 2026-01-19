@@ -625,7 +625,7 @@ impl WasmRuntime {
         Ok(stats.cpu_temp)
     }
     /// render dashboard html using the python wasm plugin
-    pub async fn render_dashboard(&self, dht_temp: f32, dht_hum: f32, bme_temp: f32, bme_hum: f32, cpu_temp: f32, pressure: f32, gas: f32, iaq: u16) -> Result<String> {
+    pub async fn render_dashboard(&self, dht_temp: f32, dht_hum: f32, bme_temp: f32, bme_hum: f32, cpu_temp: f32, memory_used: u32, memory_total: u32, uptime: u64, pressure: f32, gas: f32, iaq: u16) -> Result<String> {
         self.check_hot_reload().await;
         
         let mut guard = self.dashboard_plugin.lock().await;
@@ -633,7 +633,7 @@ impl WasmRuntime {
             .ok_or_else(|| anyhow!("dashboard plugin not loaded"))?;
         
         let html = plugin.instance.demo_plugin_dashboard_logic()
-            .call_render(&mut plugin.store, dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas, iaq)
+            .call_render(&mut plugin.store, dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, memory_used, memory_total, uptime, pressure, gas, iaq)
             .await
             .context("dashboard render() failed")?;
         

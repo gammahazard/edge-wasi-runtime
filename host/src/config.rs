@@ -71,6 +71,7 @@ pub struct LoggingConfig {
 pub struct PluginEntry {
     pub enabled: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub led: Option<u8>,
 }
 
