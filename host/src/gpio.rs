@@ -231,10 +231,8 @@ pub fn set_two_buffer(r0: u8, g0: u8, b0: u8, r1: u8, g1: u8, b1: u8) {
     let mut buffer = get_led_buffer().lock().unwrap();
     buffer[0] = (r0, g0, b0);
     buffer[1] = (r1, g1, b1);
-    // turn off the rest in the DASHBOARD active range
-    for i in 2..11 {
-        buffer[i] = (0, 0, 0);
-    }
+    // NOTE: We no longer clear LEDs 2-10 here.
+    // Each plugin is responsible for its own LEDs only.
 }
 
 /// clear the entire buffer

@@ -20,7 +20,7 @@
 // - Python classes (Guest)
 // The runtime instantiates the WASM and links these together.
 
-package demo:plugin@0.1.0;
+package demo:plugin@0.2.0;
 
 // =============================================================================
 // ARCHITECTURE OVERVIEW
@@ -154,8 +154,8 @@ interface buzzer-controller {
     beep: func(count: u8, duration-ms: u32, interval-ms: u32);
 }
 
-interface sensor-logic {
-    record sensor-reading {
+interface dht22-logic {
+    record dht22-reading {
         sensor-id: string,
         temperature: f32,
         humidity: f32,
@@ -163,8 +163,35 @@ interface sensor-logic {
     }
 
     // poll the dht22 sensor and return readings
-    // called by the host every 5 seconds
-    poll: func() -> list<sensor-reading>;
+    // called by the host based on config poll interval
+    poll: func() -> list<dht22-reading>;
+}
+
+// =============================================================================
+// pi-monitor-logic - Raspberry Pi system monitoring
+// =============================================================================
+//
+// purpose:
+//     provides system health metrics for the Raspberry Pi host.
+//     controls LED 0 to indicate system status.
+//
+// relationships:
+//     - implemented by: plugins/pi-monitor/app.py
+//     - loaded by: host/src/runtime.rs
+//
+interface pi-monitor-logic {
+    record pi-stats {
+        cpu-temp: f32,
+        cpu-usage: f32,
+        memory-used-mb: u32,
+        memory-total-mb: u32,
+        uptime-seconds: u64,
+        timestamp-ms: u64,
+    }
+
+    // poll pi system stats
+    // called by the host based on config poll interval
+    poll: func() -> pi-stats;
 }
 
 interface bme680-logic {
@@ -196,11 +223,17 @@ interface dashboard-logic {
     render: func(dht-temp: f32, dht-hum: f32, bme-temp: f32, bme-hum: f32, cpu-temp: f32, pressure: f32, gas: f32, iaq: u16) -> string;
 }
 
-world sensor-plugin {
+world dht22-plugin {
     import gpio-provider;
     import led-controller;
     import buzzer-controller;
-    export sensor-logic;
+    export dht22-logic;
+}
+
+world pi-monitor-plugin {
+    import gpio-provider;
+    import led-controller;
+    export pi-monitor-logic;
 }
 
 world bme680-plugin {

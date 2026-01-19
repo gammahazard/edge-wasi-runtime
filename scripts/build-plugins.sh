@@ -19,12 +19,19 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 echo "🔨 Building Python WASM plugins..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Build sensor (DHT22) plugin
+# Build DHT22 plugin
 echo ""
-echo "📊 Building sensor plugin..."
-cd "$ROOT_DIR/plugins/sensor"
-componentize-py -d ../../wit -w sensor-plugin componentize app -o sensor.wasm
-echo "✅ sensor.wasm created"
+echo "📊 Building DHT22 plugin..."
+cd "$ROOT_DIR/plugins/dht22"
+componentize-py -d ../../wit -w dht22-plugin componentize app -o dht22.wasm
+echo "✅ dht22.wasm created"
+
+# Build Pi Monitor plugin
+echo ""
+echo "🖥️ Building Pi Monitor plugin..."
+cd "$ROOT_DIR/plugins/pi-monitor"
+componentize-py -d ../../wit -w pi-monitor-plugin componentize app -o pi-monitor.wasm
+echo "✅ pi-monitor.wasm created"
 
 # Build BME680 plugin
 echo ""
