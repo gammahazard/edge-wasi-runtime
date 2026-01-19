@@ -283,11 +283,13 @@ async fn dashboard_handler(
         (dt, dh, bt, bh, p, g, i)
     };
     
-    // get cpu temperature
+    // get cpu temperature and system stats
     let cpu_temp = gpio::get_cpu_temp();
+    let (mem_used, mem_total) = gpio::get_memory_usage();
+    let uptime = gpio::get_uptime();
     
     // call python wasm to render html!
-    match runtime.render_dashboard(dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, pressure, gas, iaq).await {
+    match runtime.render_dashboard(dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, mem_used, mem_total, uptime, pressure, gas, iaq).await {
         Ok(html) => Html(html),
         Err(e) => {
             // render error page if plugin fails

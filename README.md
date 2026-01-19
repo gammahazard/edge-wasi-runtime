@@ -136,14 +136,14 @@ Dashboard includes **CPU Temp** and **Buzzer buttons** (Beep/Long Beep) to show 
 
 > **Key Takeaway**: The Rust host acts as a stable "Operating System", dealing with GPIO and networking, while the Python guests provide flexible, hot-reloadable "User Space" logic.
 
-## 🎨 User Experience Features
+## 🎨 User Experience Features (V2 Update)
 
-The dashboard demonstrates modern web UX patterns:
+The dashboard demonstrates modern web UX patterns with a **Cyberpunk / Terminal Aesthetic**:
 
+- **System Health Monitor**: New card displaying Pi CPU Temp, RAM Usage, and Uptime (via `sysinfo` crate)
+- **Cyberpunk Theme**: VT323 font, green-on-black terminal styling, scanline effects
+- **Responsive Grid**: Flex-wrap layout that adapts from Desktop to Mobile seamlessly
 - **Live Updates**: Browser polls `/api` endpoint every 2 seconds via JavaScript `fetch()`
-- **Smooth Animations**: Temperature and humidity values fade out → update → fade in (300ms total)
-- **No Page Refresh**: Only the numbers update, eliminating jarring full-page reloads
-- **Terminal Aesthetic**: Retro CRT theme with green-on-black colors and scanline effects
 - **Responsive Design**: Mobile-friendly layout with CSS Grid
 
 **API Endpoint:**

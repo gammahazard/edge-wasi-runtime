@@ -239,7 +239,10 @@ interface dashboard-logic {
     // @param pressure: atmospheric pressure in hPa (optional, -1.0 if missing)
     // @param gas: gas resistance in KOhms (optional, -1.0 if missing)
     // @param iaq: indoor air quality score (0-500) (optional, 0 if missing)
-    render: func(dht-temp: f32, dht-hum: f32, bme-temp: f32, bme-hum: f32, cpu-temp: f32, pressure: f32, gas: f32, iaq: u16) -> string;
+    // @param memory-used-mb: used system ram in mb
+    // @param memory-total-mb: total system ram in mb
+    // @param uptime-seconds: system uptime in seconds
+    render: func(dht-temp: f32, dht-hum: f32, bme-temp: f32, bme-hum: f32, cpu-temp: f32, memory-used-mb: u32, memory-total-mb: u32, uptime-seconds: u64, pressure: f32, gas: f32, iaq: u16) -> string;
 }
 
 world dht22-plugin {

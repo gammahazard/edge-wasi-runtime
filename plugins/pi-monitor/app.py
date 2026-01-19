@@ -56,16 +56,19 @@ class PiMonitorLogic(PiMonitorLogic):
         used_mb, total_mb = system_info.get_memory_usage()
         uptime = system_info.get_uptime()
         
+        # Shared log string
+        stats_msg = f"CPU: {cpu_temp:.1f}°C ({cpu_usage:.1f}%) | RAM: {used_mb}/{total_mb}MB | Up: {uptime}s"
+        
         # Control LED 0 based on CPU temp
         if cpu_temp > CPU_TEMP_HOT:
             led_controller.set_led(0, 255, 0, 0)  # Red - HOT
-            print(f"🔴 [PI] CPU HOT: {cpu_temp:.1f}°C")
+            print(f"🔴 [PI] HOT | {stats_msg}")
         elif cpu_temp > CPU_TEMP_WARM:
             led_controller.set_led(0, 255, 255, 0)  # Yellow - warm
-            print(f"🟡 [PI] CPU Warm: {cpu_temp:.1f}°C")
+            print(f"🟡 [PI] WARM | {stats_msg}")
         else:
             led_controller.set_led(0, 0, 255, 0)  # Green - cool
-            print(f"🟢 [PI] OK | CPU: {cpu_temp:.1f}°C ({cpu_usage:.1f}%) | RAM: {used_mb}/{total_mb}MB | Up: {uptime}s")
+            print(f"🟢 [PI] OK | {stats_msg}")
         
         return PiStats(
             cpu_temp=cpu_temp,

@@ -37,13 +37,20 @@ interface i2c {
 interface spi {
     transfer: func(data: list<u8>) -> list<u8>; // Full duplex
 }
+
+interface uart {
+    // For GPS, Lidar, LoRa modules
+    read: func(max-len: u32) -> list<u8>;
+    write: func(data: list<u8>) -> u32;
+    set-baud: func(rate: u32);
+}
 ```
 
 ### Phase 2: Host Implementation (rppal / linux-embedded-hal)
 The Host removes specific driver logic (python scripts) and uses `rppal` (Rust Raspberry Pi HAL) to talk properly to the kernel.
 
 **New `host/Cargo.toml` dependencies:**
-- `rppal = "0.14"` (GPIO, I2C, SPI, PWM)
+- `rppal = "0.14"` (GPIO, I2C, SPI, PWM, UART)
 
 **New `gpio.rs` logic:**
 ```rust
@@ -60,13 +67,14 @@ pub fn i2c_transfer(addr: u16, data: &[u8]) -> Vec<u8> {
 **Critical Insight**: Some sensors (DHT22, WS2812B) require microsecond-level timing that WASM (running in a runtime) cannot guarantee.
 - **Strategy**: Keep specific drivers *only* for timing-sensitive hardware.
 - **Result**:
-    - **I2C/SPI Sensors**: Fully generic (Python drivers).
+    - **I2C/SPI/UART Sensors**: Fully generic (Python drivers).
     - **Timing Critical**: Host extensions (Keep `dht22-provider` interface).
 
 ## 4. Security Model (permission.toml)
-Giving raw I2C access is dangerous. We need a permission system.
-*Current*: Implicit trust.
-*Future*: Config-based capabilities.
+Giving generic "Raw I/O" (I2C/GPIO) access is powerful but adds risk. We need a permission system to maintain our high security standards.
+
+*   **Current Architecture**: **Safe by Design**. Plugins can only call specific, harmless functions (`get_temp`). They cannot access hardware addresses.
+*   **Future Generic HAL**: **Safe by Configuration**. Since we are exposing raw capabilities (`i2c_write`), we will use `permission.toml` to whitelist exactly which sensors a plugin can touch (e.g., "Plugin A can only talk to address 0x77").
 
 ```toml
 [plugins.bme680]
@@ -74,14 +82,31 @@ allowed_i2c = [0x76, 0x77] # Can only talk to these addresses
 allowed_gpio = []
 ```
 
-## 5. Step-by-Step Execution
-1.  **Define WIT**: Add `gpio`, `i2c` interfaces to `plugin.wit`.
-2.  **Impl Host**: Add `rppal` to Host and implement I2C/GPIO traits.
-3.  **Port BME680**: Rewrite `plugins/bme680/app.py` to use `i2c.write` instead of calling `bme680-logic`.
-4.  **Verify**: Ensure BME680 still works.
-5.  **Cleanup**: Remove `read-bme680` from Host.
+## 5. Cross-Platform Configuration (Host.toml)
+Since device paths differ (Pi 4 vs RevPi), we use config to map them transparently.
 
-## 6. Benefits for Portfolio
+**RevPi vs Pi 4 Mapping**:
+*   Pi 4: `i2c_bus = "/dev/i2c-1"`
+*   RevPi: `i2c_bus = "/dev/i2c-0"` (or virtual)
+*   **The Code**: Stays identical. `rppal` handles the BCM2711 register access for both.
+
+## 6. Docker & Containerization Strategy
+Running this Host in Docker (the ultimate "Run Anywhere") requires passing hardware ownership to the container.
+
+**The Command** (Future state):
+```bash
+docker run -d \
+  --device /dev/gpiomem \
+  --device /dev/i2c-1 \
+  --device /dev/ttyAMA0 \
+  -v ./host.toml:/app/config/host.toml \
+  wasi-host:latest
+```
+*   **WASI Benefit**: The WASM plugins don't care about Docker. They see the same WIT interface.
+*   **Host Responsibility**: The Host binaries (Rust) talk to the mapped `/dev` nodes.
+
+## 7. Benefits for Portfolio
 - Demonstrates **Systems Architecture** (Kernel vs User-space).
 - Shows understanding of **Real-Time Constraints** (Hybrid approach).
 - True "Platform Engineering" vs just script writing.
+- **Microservices-ready**: The Docker strategy aligns with Kubernetes edge deployments.
