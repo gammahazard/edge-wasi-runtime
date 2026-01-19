@@ -64,7 +64,9 @@ The following diagram illustrates how the Rust Host securely manages the Python 
 graph TD
     subgraph Pi [Raspberry Pi Device]
         DHT22[DHT22 Sensor]
+        BME680[BME680 Sensor]
         GPIO[GPIO Pins]
+        LEDS[WS2812B LEDs]
     end
 
     subgraph Host [Rust Host Process]
@@ -78,12 +80,20 @@ graph TD
     end
 
     subgraph Guest [WASM Sandbox]
-        subgraph Python1 [Sensor Plugin]
-            SensorApp[app.py]
+        subgraph DHT22Plugin [DHT22 Plugin]
+            DHT22App[app.py - LED 1]
         end
         
-        subgraph Python2 [Dashboard Plugin]
-            DashboardApp[app.py]
+        subgraph PiMonPlugin [Pi Monitor Plugin]
+            PiMonApp[app.py - LED 0]
+        end
+        
+        subgraph BME680Plugin [BME680 Plugin]
+            BME680App[app.py - LED 2]
+        end
+        
+        subgraph DashPlugin [Dashboard Plugin]
+            DashboardApp[app.py - HTML]
         end
     end
 
@@ -91,11 +101,19 @@ graph TD
     Runtime -->|render calls| DashboardApp
     DashboardApp -->|HTML| HTTP_Mod
     
-    Runtime -->|poll calls| SensorApp
-    SensorApp -->|read_dht22| Linker
+    Runtime -->|poll calls| DHT22App
+    Runtime -->|poll calls| PiMonApp
+    Runtime -->|poll calls| BME680App
+    
+    DHT22App -->|read_dht22| Linker
+    PiMonApp -->|get_cpu_temp| Linker
+    BME680App -->|read_bme680| Linker
+    
     Linker -->|Secure Call| GPIO_Mod
     GPIO_Mod -->|Subprocess| GPIO
     GPIO -->|Signal| DHT22
+    GPIO -->|I2C| BME680
+    GPIO_Mod -->|WS2812B| LEDS
 
     style DHT22 fill:#ff6666,stroke:#333
     style GPIO fill:#ff6666,stroke:#333

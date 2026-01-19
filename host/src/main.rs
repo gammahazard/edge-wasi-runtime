@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
     let runtime = match runtime::WasmRuntime::new(std::path::PathBuf::from("..")).await {
         Ok(r) => {
             println!("[STARTUP] ✓ WASM runtime ready");
-            println!("[STARTUP] ✓ Loaded plugins: dht22, bme680, dashboard");
+            println!("[STARTUP] ✓ Loaded plugins: dht22, pi-monitor, bme680, dashboard");
             r
         }
         Err(e) => {
@@ -210,7 +210,17 @@ async fn main() -> Result<()> {
             }
         }
 
-        // 3. Sync LEDs atomically ONCE after all plugins finish
+        // 3. Poll Pi Monitor (pi-monitor plugin)
+        match runtime.poll_pi_monitor().await {
+            Ok(_cpu_temp) => {
+                // CPU temp is logged inside the plugin
+            }
+            Err(e) => {
+                println!("[PI] ⚠ Monitor error: {}", e);
+            }
+        }
+
+        // 4. Sync LEDs atomically ONCE after all plugins finish
         tokio::task::spawn_blocking(|| gpio::sync_leds()).await.ok();
 
         if !all_readings.is_empty() {
