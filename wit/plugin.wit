@@ -314,16 +314,19 @@ interface dashboard-logic {
     // render a complete html dashboard page with real sensor data
     // called by the host when a browser hits http://host:3000/
     //
-    // @param temperature: room temperature in celsius (from dht22)
-    // @param humidity: relative humidity percentage (from dht22)
-    // @param cpu-temp: raspberry pi cpu temperature in celsius
-    // @param pressure: atmospheric pressure in hPa (optional, -1.0 if missing)
-    // @param gas: gas resistance in KOhms (optional, -1.0 if missing)
-    // @param iaq: indoor air quality score (0-500) (optional, 0 if missing)
-    // @param memory-used-mb: used system ram in mb
-    // @param memory-total-mb: total system ram in mb
-    // @param uptime-seconds: system uptime in seconds
-    render: func(dht-temp: f32, dht-hum: f32, bme-temp: f32, bme-hum: f32, cpu-temp: f32, memory-used-mb: u32, memory-total-mb: u32, uptime-seconds: u64, pressure: f32, gas: f32, iaq: u16) -> string;
+    // @param sensor-data: JSON string containing all sensor readings
+    //
+    // JSON format:
+    // {
+    //   "dht22": { "temp": 22.5, "humidity": 45.0 },
+    //   "bme680": { "temp": 23.0, "humidity": 40.0, "pressure": 1013.25, "gas": 50.0, "iaq": 25 },
+    //   "pi": { "cpu_temp": 55.0, "memory_used_mb": 1500, "memory_total_mb": 4000, "uptime_seconds": 12345 },
+    //   "oled": { ... },  // Future sensors just add new keys
+    // }
+    //
+    // This allows adding new sensors WITHOUT modifying WIT or recompiling the host!
+    //
+    render: func(sensor-data: string) -> string;
 }
 
 world dht22-plugin {
@@ -366,3 +369,13 @@ world generic-i2c-plugin {
     export bme680-logic;   // Reuse bme680-logic interface for now
 }
 
+
+interface oled-logic {
+    // update the display with the latest sensor data (JSON)
+    update: func(sensor-data: string);
+}
+
+world oled-plugin {
+    import i2c;
+    export oled-logic;
+}

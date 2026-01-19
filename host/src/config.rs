@@ -85,6 +85,8 @@ pub struct PluginsConfig {
     pub bme680: PluginEntry,
     #[serde(default)]
     pub dashboard: PluginEntry,
+    #[serde(default)]
+    pub oled: PluginEntry,
 }
 
 impl HostConfig {

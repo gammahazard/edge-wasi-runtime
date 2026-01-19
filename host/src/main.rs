@@ -268,28 +268,50 @@ async fn dashboard_handler(
 ) -> Html<String> {
     let state = state.read().await;
     
-    let (dht_temp, dht_hum, bme_temp, bme_hum, pressure, gas, iaq) = {
-        let dht = state.readings.iter().find(|x| x.pressure.is_none());
-        let dt = dht.map(|x| x.temperature).unwrap_or(0.0);
-        let dh = dht.map(|x| x.humidity).unwrap_or(0.0);
-
-        let bme = state.readings.iter().find(|x| x.pressure.is_some());
-        let bt = bme.map(|x| x.temperature).unwrap_or(0.0);
-        let bh = bme.map(|x| x.humidity).unwrap_or(0.0);
-        let p = bme.and_then(|x| x.pressure).unwrap_or(-1.0);
-        let g = bme.and_then(|x| x.gas_resistance).unwrap_or(-1.0);
-        let i = bme.and_then(|x| x.iaq_score).unwrap_or(0);
-        
-        (dt, dh, bt, bh, p, g, i)
-    };
+    // Extract sensor readings
+    let dht = state.readings.iter().find(|x| x.pressure.is_none());
+    let bme = state.readings.iter().find(|x| x.pressure.is_some());
     
-    // get cpu temperature and system stats
+    // Get system stats
     let cpu_temp = gpio::get_cpu_temp();
     let (mem_used, mem_total) = gpio::get_memory_usage();
     let uptime = gpio::get_uptime();
     
-    // call python wasm to render html!
-    match runtime.render_dashboard(dht_temp, dht_hum, bme_temp, bme_hum, cpu_temp, mem_used, mem_total, uptime, pressure, gas, iaq).await {
+    // Build JSON object with all sensor data
+    // This allows adding new sensors without modifying this code!
+    let sensor_data = serde_json::json!({
+        "dht22": {
+            "temp": dht.map(|x| x.temperature).unwrap_or(0.0),
+            "humidity": dht.map(|x| x.humidity).unwrap_or(0.0)
+        },
+        "bme680": {
+            "temp": bme.map(|x| x.temperature).unwrap_or(0.0),
+            "humidity": bme.map(|x| x.humidity).unwrap_or(0.0),
+            "pressure": bme.and_then(|x| x.pressure).unwrap_or(-1.0),
+            "gas": bme.and_then(|x| x.gas_resistance).unwrap_or(-1.0),
+            "iaq": bme.and_then(|x| x.iaq_score).unwrap_or(0)
+        },
+        "pi": {
+            "cpu_temp": cpu_temp,
+            "memory_used_mb": mem_used,
+            "memory_total_mb": mem_total,
+            "uptime_seconds": uptime
+        }
+    });
+    
+    let json_str = sensor_data.to_string();
+
+    // Update OLED (fire and forget, just log errors)
+    // This runs the python logic in plugins/oled/app.py
+    if let Err(e) = runtime.update_oled(&json_str).await {
+        // Only log if it's not the "plugin not loaded" error (which is normal if disabled)
+        if !e.to_string().contains("not loaded") {
+            println!("[ERROR] OLED update failed: {}", e);
+        }
+    }
+    
+    // Call python wasm to render html!
+    match runtime.render_dashboard(&json_str).await {
         Ok(html) => Html(html),
         Err(e) => {
             // render error page if plugin fails
