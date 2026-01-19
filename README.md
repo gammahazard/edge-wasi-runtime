@@ -25,29 +25,29 @@ The Rust Host acts as an **Operating System**, providing raw hardware access (I2
 
 ```mermaid
 graph TD
-    subgraph Pi [Raspberry Pi Device]
-        DHT22[DHT22 Sensor]
-        BME680[BME680 Sensor]
-        OLED[SSD1306 OLED]
-        I2C_Bus[I2C Bus 1]
+    subgraph Pi ["Raspberry Pi Device"]
+        DHT22["DHT22 Sensor"]
+        BME680["BME680 Sensor"]
+        OLED["SSD1306 OLED"]
+        I2C_Bus["I2C Bus 1"]
     end
 
-    subgraph Host [Rust Host (Operating System)]
-        Runtime[WasmRuntime]
-        HAL[Generic HAL]
-        Runtime -->|Broadasts JSON| Plugins
+    subgraph Host ["Rust Host (Operating System)"]
+        Runtime["WasmRuntime"]
+        HAL["Generic HAL"]
+        Runtime -->|"Broadcasts JSON"| Plugins
     end
 
-    subgraph UserSpace [WASM Sandbox]
-        BME680_Driver[BME680 Driver (Python)]
-        OLED_App[OLED App (Python)]
-        Dashboard[Dashboard (Python)]
+    subgraph UserSpace ["WASM Sandbox"]
+        BME680_Driver["BME680 Driver (Python)"]
+        OLED_App["OLED App (Python)"]
+        Dashboard["Dashboard (Python)"]
         
-        BME680_Driver -->|i2c.transfer| HAL
-        OLED_App -->|i2c.transfer| HAL
+        BME680_Driver -->|"i2c.transfer"| HAL
+        OLED_App -->|"i2c.transfer"| HAL
     end
 
-    HAL -->|rppal i2c| I2C_Bus
+    HAL -->|"rppal i2c"| I2C_Bus
     I2C_Bus --> BME680
     I2C_Bus --> OLED
 ```
