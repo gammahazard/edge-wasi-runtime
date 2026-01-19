@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
     
     // step 3: initialize the wasm runtime
     println!("\n[STARTUP] Initializing WASM Runtime...");
-    let runtime = match runtime::WasmRuntime::new(std::path::PathBuf::from("..")).await {
+    let runtime = match runtime::WasmRuntime::new(std::path::PathBuf::from(".."), &config).await {
         Ok(r) => {
             println!("[STARTUP] ✓ WASM runtime ready");
             println!("[STARTUP] ✓ Loaded plugins: dht22, pi-monitor, bme680, dashboard");
@@ -171,52 +171,58 @@ async fn main() -> Result<()> {
     loop {
         let mut all_readings = Vec::new();
 
-        // 1. Poll DHT22 (sensor plugin)
-        match runtime.poll_sensors().await {
-            Ok(readings) => {
-                if show_data {
-                    for r in &readings {
-                        println!("[DHT22] Temp: {:.1}°C | Humidity: {:.1}%", r.temperature, r.humidity);
+        // 1. Poll DHT22 (if enabled)
+        if config.plugins.dht22.enabled {
+            match runtime.poll_sensors().await {
+                Ok(readings) => {
+                    if show_data {
+                        for r in &readings {
+                            println!("[DHT22] Temp: {:.1}°C | Humidity: {:.1}%", r.temperature, r.humidity);
+                        }
                     }
+                    all_readings.extend(readings);
                 }
-                all_readings.extend(readings);
-            }
-            Err(e) => {
-                println!("[DHT22] ⚠ Read error: {}", e);
+                Err(e) => {
+                    println!("[DHT22] ⚠ Read error: {}", e);
+                }
             }
         }
 
-        // 2. Poll BME680 (bme680 plugin)
-        match runtime.poll_bme680().await {
-            Ok(readings) => {
-                if show_data {
-                    for r in &readings {
-                        let iaq = r.iaq_score.unwrap_or(0);
-                        let status = match iaq {
-                            0 => "CALIBRATING",
-                            1..=50 => "Excellent",
-                            51..=100 => "Good",
-                            101..=150 => "Moderate",
-                            _ => "Poor",
-                        };
-                        println!("[BME680] Temp: {:.1}°C | Humidity: {:.1}% | IAQ: {} ({})", 
-                            r.temperature, r.humidity, iaq, status);
+        // 2. Poll BME680 (if enabled)
+        if config.plugins.bme680.enabled {
+            match runtime.poll_bme680().await {
+                Ok(readings) => {
+                    if show_data {
+                        for r in &readings {
+                            let iaq = r.iaq_score.unwrap_or(0);
+                            let status = match iaq {
+                                0 => "CALIBRATING",
+                                1..=50 => "Excellent",
+                                51..=100 => "Good",
+                                101..=150 => "Moderate",
+                                _ => "Poor",
+                            };
+                            println!("[BME680] Temp: {:.1}°C | Humidity: {:.1}% | IAQ: {} ({})", 
+                                r.temperature, r.humidity, iaq, status);
+                        }
                     }
+                    all_readings.extend(readings);
                 }
-                all_readings.extend(readings);
-            }
-            Err(e) => {
-                println!("[BME680] ⚠ Read error: {}", e);
+                Err(e) => {
+                    println!("[BME680] ⚠ Read error: {}", e);
+                }
             }
         }
 
-        // 3. Poll Pi Monitor (pi-monitor plugin)
-        match runtime.poll_pi_monitor().await {
-            Ok(_cpu_temp) => {
-                // CPU temp is logged inside the plugin
-            }
-            Err(e) => {
-                println!("[PI] ⚠ Monitor error: {}", e);
+        // 3. Poll Pi Monitor (if enabled)
+        if config.plugins.pi_monitor.enabled {
+            match runtime.poll_pi_monitor().await {
+                Ok(_cpu_temp) => {
+                    // CPU temp is logged inside the plugin
+                }
+                Err(e) => {
+                    println!("[PI] ⚠ Monitor error: {}", e);
+                }
             }
         }
 

@@ -36,6 +36,14 @@ i2c_address = "0x77"
 [logging]
 level = "info"
 show_sensor_data = true
+
+[plugins.dht22]
+enabled = true
+led = 1
+
+[plugins.pi_monitor]
+enabled = true
+led = 0
 ```
 
 ## Runtime Lifecycle
