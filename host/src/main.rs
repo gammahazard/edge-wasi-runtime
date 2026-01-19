@@ -9,7 +9,7 @@
 //!
 //! responsibilities:
 //!     - initialize wasmtime engine (wasm execution environment)
-//!     - load python wasm plugins (sensor.wasm, dashboard.wasm)
+//!     - load python wasm plugins (dht22.wasm, pi-monitor.wasm, bme680.wasm, dashboard.wasm)
 //!     - provide wasi capabilities (stdio, clocks) to sandboxed plugins
 //!     - run polling loop to collect sensor data
 //!     - serve web dashboard with data from wasm-rendered html
@@ -18,7 +18,7 @@
 //! relationships:
 //!     - uses: runtime.rs (wasm loading, plugin execution, hot reload)
 //!     - reads: ../wit/plugin.wit (interface definitions, via runtime.rs)
-//!     - loads: ../plugins/sensor/sensor.wasm (python sensor logic)
+//!     - loads: ../plugins/dht22/dht22.wasm (python dht22 logic)
 //!     - loads: ../plugins/dashboard/dashboard.wasm (python html rendering)
 //!
 //! architecture:
@@ -41,7 +41,7 @@
 //!                    ┌───────────┴───────────┐
 //!                    ▼                       ▼
 //!             ┌─────────────┐         ┌─────────────┐
-//!             │ sensor.wasm │         │ dashboard   │
+//!             │ dht22.wasm  │         │ dashboard   │
 //!             │  (python)   │         │   .wasm     │
 //!             └─────────────┘         └─────────────┘
 //!
