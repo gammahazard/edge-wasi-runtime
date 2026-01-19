@@ -1,24 +1,30 @@
 //! ==============================================================================
-//! runtime.rs - wasm component model runtime with gpio capability
+//! runtime.rs - WASM Component Model Runtime with GPIO/HAL Capabilities
 //! ==============================================================================
 //!
 //! purpose:
-//!     this module handles loading and executing wasm plugins using wasmtime.
-//!     it implements the WASI CAPABILITY MODEL where:
-//!     - the HOST provides gpio access (gpio-provider interface)
-//!     - the GUEST implements sensor logic (calls gpio-provider)
-//!     - the GUEST runs in a SANDBOX and cannot access hardware directly
+//!     loads and executes WASM plugins using wasmtime. implements the WASI
+//!     capability model where:
+//!     - HOST provides hardware access (gpio, led, buzzer, i2c, system-info)
+//!     - GUEST runs sandboxed sensor/UI logic (Python compiled to WASM)
+//!     - KEY security boundary: plugins can only access granted capabilities
 //!
-//! this is the KEY security boundary of WASI - the sandboxed python code
-//! can only access what we explicitly grant through the linker.
+//! plugins:
+//!     - dht22: Room temperature/humidity sensor, controls LED 1
+//!     - bme680: Environmental sensor (temp, humidity, pressure, gas/IAQ), LED 2
+//!     - pi-monitor: System health (CPU temp, RAM, uptime), controls LED 0
+//!     - dashboard: HTML rendering (no hardware access)
+//!
+//! phase 3 (generic hal):
+//!     - Implements i2c::Host trait for generic I2C access (uses hex strings)
+//!     - Enables "Compile Once" - new sensors via Python plugins only
 //!
 //! relationships:
-//!     - used by: main.rs (creates runtime, calls poll_sensors/render_dashboard)
+//!     - used by: main.rs (creates runtime, polling loop)
 //!     - reads: ../wit/plugin.wit (interface definitions)
-//!     - implements: gpio-provider interface (via GpioProviderImports trait)
-//!     - uses: gpio.rs (actual hardware access)
-//!     - loads: ../plugins/dht22/dht22.wasm (python dht22 logic)
-//!     - loads: ../plugins/dashboard/dashboard.wasm (python ui rendering)
+//!     - implements: gpio-provider, led-controller, buzzer-controller, i2c, system-info
+//!     - uses: gpio.rs (actual hardware access via rppal)
+//!     - loads: ../plugins/{dht22,bme680,pi-monitor,dashboard}/*.wasm
 //!
 //! ==============================================================================
 
@@ -702,9 +708,9 @@ impl bme680_bindings::demo::plugin::led_controller::Host for HostState {
 // ==============================================================================
 
 impl bme680_bindings::demo::plugin::i2c::Host for HostState {
-    async fn transfer(&mut self, addr: u8, write_data: Vec<u8>, read_len: u32) -> Result<Vec<u8>, String> {
+    async fn transfer(&mut self, addr: u8, write_data_hex: String, read_len: u32) -> Result<String, String> {
         tokio::task::spawn_blocking(move || {
-            gpio::i2c_transfer(addr, &write_data, read_len)
+            gpio::i2c_transfer(addr, &write_data_hex, read_len)
         })
         .await
         .map_err(|e| format!("task join error: {}", e))?

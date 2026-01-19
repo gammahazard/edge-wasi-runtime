@@ -1,26 +1,31 @@
 //! ==============================================================================
-//! gpio.rs - hardware capability provider for dht22 sensor
+//! gpio.rs - Hardware Capability Provider (Generic HAL)
 //! ==============================================================================
 //!
 //! purpose:
-//!     provides REAL gpio/hardware access to the dht22 temperature/humidity sensor.
-//!     this is the HOST-SIDE implementation of the gpio-provider interface.
-//!     the sandboxed wasm plugin calls these functions to read actual hardware.
+//!     provides hardware access to sensors, LEDs, buzzers, and generic I/O.
+//!     this is the HOST-SIDE implementation of multiple WIT interfaces:
+//!     - gpio-provider: DHT22, BME680, CPU temp, timestamps
+//!     - led-controller: WS2812B LED strip control
+//!     - buzzer-controller: Piezo buzzer via relay
+//!     - i2c/spi/uart: Generic HAL interfaces (Phase 3)
+//!     - system-info: Memory, CPU usage, uptime
 //!
 //! security model:
-//!     this is the "landlord" capability. the wasm "tenant" cannot directly
-//!     access gpio pins. instead, it calls gpio_provider.read_dht22() which
-//!     is handled here in the trusted host code.
+//!     this is the "landlord" capability. WASM "tenants" cannot directly
+//!     access hardware. They call interface functions which are handled here.
+//!
+//! phase 3 (generic hal):
+//!     - i2c.transfer(): Hex-encoded I2C read/write (uses rppal)
+//!     - spi.transfer(): SPI full-duplex (uses rppal)
+//!     - uart.*(): Serial communication (uses rppal)
+//!     Note: Uses hex strings due to componentize-py marshalling limitations.
 //!
 //! relationships:
-//!     - implements: ../wit/plugin.wit (gpio-provider interface)
-//!     - used by: runtime.rs (implements GpioProviderImports trait)
-//!     - uses: python3/adafruit_dht (via subprocess for reliable timing)
-//!
-//! why subprocess to python?:
-//!     dht22 sensors require precise bit-banging timing (~microseconds).
-//!     pure rust in userspace is unreliable due to lack of real-time guarantees.
-//!     adafruit_dht handles this correctly with retries and timing compensation.
+//!     - implements: ../wit/plugin.wit (multiple interfaces)
+//!     - used by: runtime.rs (trait implementations)
+//!     - uses: rppal (I2C/SPI/UART), sysinfo (system stats)
+//!     - uses: python3 subprocess for timing-critical sensors (DHT22, WS2812B)
 //!
 //! ==============================================================================
 
@@ -248,9 +253,17 @@ except Exception as e:
 /// @param addr: 7-bit I2C device address
 /// @param write_data: bytes to write to device
 /// @param read_len: number of bytes to read back
-/// @returns: bytes read from device
-pub fn i2c_transfer(addr: u8, write_data: &[u8], read_len: u32) -> Result<Vec<u8>> {
+/// @returns: hex-encoded string of bytes read (e.g., "61" for [0x61])
+///
+/// NOTE: Uses hex strings for BOTH input and output due to componentize-py
+///       marshalling limitations with list<u8>.
+///       Python: i2c_transfer(0x77, "D0", 1) -> "61"
+pub fn i2c_transfer(addr: u8, write_data_hex: &str, read_len: u32) -> Result<String> {
     use rppal::i2c::I2c;
+    
+    // Decode hex input to bytes
+    let write_data = hex::decode(write_data_hex)
+        .map_err(|e| anyhow!("Invalid hex input '{}': {}", write_data_hex, e))?;
     
     let mut i2c = I2c::new()
         .map_err(|e| anyhow!("Failed to open I2C bus: {}", e))?;
@@ -260,7 +273,7 @@ pub fn i2c_transfer(addr: u8, write_data: &[u8], read_len: u32) -> Result<Vec<u8
     
     // Write command/register bytes
     if !write_data.is_empty() {
-        i2c.write(write_data)
+        i2c.write(&write_data)
             .map_err(|e| anyhow!("I2C write failed: {}", e))?;
     }
     
@@ -269,9 +282,10 @@ pub fn i2c_transfer(addr: u8, write_data: &[u8], read_len: u32) -> Result<Vec<u8
         let mut buffer = vec![0u8; read_len as usize];
         i2c.read(&mut buffer)
             .map_err(|e| anyhow!("I2C read failed: {}", e))?;
-        Ok(buffer)
+        // Encode bytes as hex string
+        Ok(hex::encode(&buffer))
     } else {
-        Ok(vec![])
+        Ok(String::new())
     }
 }
 
@@ -282,14 +296,15 @@ pub fn i2c_transfer(addr: u8, write_data: &[u8], read_len: u32) -> Result<Vec<u8
 pub fn spi_transfer(data: &[u8]) -> Result<Vec<u8>> {
     use rppal::spi::{Bus, Mode, SlaveSelect, Spi};
     
-    let mut spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, 1_000_000, Mode::Mode0)
+    let spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, 1_000_000, Mode::Mode0)
         .map_err(|e| anyhow!("Failed to open SPI: {}", e))?;
     
-    let mut buffer = data.to_vec();
-    spi.transfer(&mut buffer)
+    // rppal 0.19 uses separate read/write buffers
+    let mut read_buffer = vec![0u8; data.len()];
+    spi.transfer(&mut read_buffer, data)
         .map_err(|e| anyhow!("SPI transfer failed: {}", e))?;
     
-    Ok(buffer)
+    Ok(read_buffer)
 }
 
 /// UART read - read available bytes from serial buffer

@@ -60,3 +60,7 @@ toml = "0.8"
 # This enables the "Generic HAL" architecture where plugins can use raw I/O.
 # Note: Only works on Raspberry Pi (ARM). Build will fail on x86.
 rppal = "0.19"
+
+# HEX - Hex encoding/decoding
+# Used for i2c/spi data transfer due to componentize-py marshalling limitations.
+hex = "0.4"
