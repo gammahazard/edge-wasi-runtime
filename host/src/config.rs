@@ -25,6 +25,8 @@ pub struct HostConfig {
     pub buzzer: BuzzerConfig,
     pub logging: LoggingConfig,
     #[serde(default)]
+    pub cluster: ClusterConfig,
+    #[serde(default)]
     pub plugins: PluginsConfig,
 }
 
@@ -67,6 +69,23 @@ pub struct LoggingConfig {
     pub show_sensor_data: bool,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct ClusterConfig {
+    pub role: String,      // "hub" or "spoke"
+    pub hub_url: String,   // e.g. "http://192.168.40.9:3000/api/readings"
+    pub node_id: String,   // e.g. "pi4-sensor-node"
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            role: "standalone".to_string(),
+            hub_url: "".to_string(),
+            node_id: "unknown".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct PluginEntry {
     pub enabled: bool,
@@ -103,18 +122,27 @@ impl HostConfig {
     
     /// Load with default fallback
     pub fn load_or_default() -> Self {
-        let config_path = std::path::PathBuf::from("..").join("config").join("host.toml");
-        
-        match Self::load(&config_path) {
-            Ok(config) => {
-                println!("[CONFIG] Loaded from {}", config_path.display());
-                config
-            }
-            Err(e) => {
-                println!("[CONFIG] Warning: {} - using defaults", e);
-                Self::default()
+        let paths = [
+            std::path::PathBuf::from("config").join("host.toml"),      // Docker / Production
+            std::path::PathBuf::from("..").join("config").join("host.toml"), // Local Development
+        ];
+
+        for path in &paths {
+            if path.exists() {
+                match Self::load(path) {
+                    Ok(config) => {
+                        println!("[CONFIG] Loaded from {}", path.display());
+                        return config;
+                    }
+                    Err(e) => {
+                        println!("[CONFIG] Warning: Failed to load {}: {}", path.display(), e);
+                    }
+                }
             }
         }
+        
+        println!("[CONFIG] Warning: No config file found - using defaults");
+        Self::default()
     }
     
     /// Print configuration summary for logging
@@ -128,6 +156,7 @@ impl HostConfig {
         println!("│ LED Count: {} (GPIO {}, bright {})      │", self.leds.count, self.leds.gpio_pin, self.leds.brightness);
         println!("│ Buzzer GPIO: {}                         │", self.buzzer.gpio_pin);
         println!("│ Log Level: {}                        │", self.logging.level);
+        println!("│ Cluster Role: {} ({})                  │", self.cluster.role, self.cluster.node_id);
         println!("├─────────────────────────────────────────┤");
         println!("│ Plugins:                                │");
         println!("│   dht22: {}   pi-monitor: {}            │", 
@@ -151,6 +180,7 @@ impl Default for HostConfig {
             leds: LedConfig { count: 11, gpio_pin: 18, brightness: 50 },
             buzzer: BuzzerConfig { gpio_pin: 17 },
             logging: LoggingConfig { level: "info".to_string(), show_sensor_data: true },
+            cluster: ClusterConfig::default(),
             plugins: PluginsConfig::default(),
         }
     }

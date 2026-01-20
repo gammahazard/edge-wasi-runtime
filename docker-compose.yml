@@ -3,7 +3,7 @@
 # ==============================================================================
 #
 # Runs the WASI host with hardware passthrough for GPIO, I2C, SPI, UART.
-# 
+#
 # Usage:
 #   docker-compose up -d      # Start in background
 #   docker-compose logs -f    # View logs
@@ -18,33 +18,34 @@ services:
     build: .
     container_name: wasi-host
     restart: unless-stopped
-    
+
     # Hardware passthrough (required for GPIO/I2C/SPI access)
     devices:
-      - /dev/gpiomem:/dev/gpiomem       # GPIO memory access
-      - /dev/i2c-1:/dev/i2c-1           # I2C bus (Pi 4, RevPi)
-      - /dev/spidev0.0:/dev/spidev0.0   # SPI bus
-      - /dev/spidev0.1:/dev/spidev0.1   # SPI bus (alternate CS)
-      - /dev/ttyAMA0:/dev/ttyAMA0       # UART (serial)
-    
+      - /dev/gpiomem:/dev/gpiomem # GPIO memory access
+      - /dev/i2c-1:/dev/i2c-1 # I2C bus (Pi 4, RevPi)
+      - /dev/piControl0:/dev/piControl0 # Revolution Pi Industrial I/O
+      - /dev/spidev0.0:/dev/spidev0.0 # SPI bus
+      - /dev/spidev0.1:/dev/spidev0.1 # SPI bus (alternate CS)
+      - /dev/ttyAMA0:/dev/ttyAMA0 # UART (serial)
+
     # Required for GPIO access
     privileged: true
-    
+
     # Mount config as volume for easy editing without rebuild
     volumes:
       - ./config:/app/config:ro
       - ./plugins:/app/plugins:ro
       - ./logs:/app/logs
-    
+
     # Expose dashboard
     ports:
       - "3000:3000"
-    
+
     # Environment variables
     environment:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
-    
+
     # Resource limits (optional, good for edge devices)
     deploy:
       resources:

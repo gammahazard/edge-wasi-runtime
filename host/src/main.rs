@@ -69,6 +69,7 @@
 mod config;
 mod gpio;
 mod runtime;
+mod domain; // NEW
 
 use anyhow::Result;
 use axum::{
@@ -81,42 +82,13 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
+use crate::domain::{AppState, SensorReading};
 
-// ==============================================================================
-// shared state
-// ==============================================================================
-// this struct holds sensor readings that are shared between:
-// - the polling loop (writes new readings)
-// - the web server (reads for api and dashboard)
-//
-// we use arc<rwlock<>> for thread-safe sharing:
-// - arc: reference-counted pointer for sharing across tasks
-// - rwlock: multiple readers OR one writer (sensors write, http reads)
-
-#[derive(Clone, Default, serde::Serialize)]
-pub struct AppState {
-    /// current sensor readings
-    pub readings: Vec<SensorReading>,
-    /// unix timestamp (ms) of last successful update
-    pub last_update: u64,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct SensorReading {
-    /// unique sensor identifier (e.g., "dht22-gpio4")
-    pub sensor_id: String,
-    /// temperature in celsius
-    pub temperature: f32,
-    /// relative humidity (0-100%)
-    pub humidity: f32,
-    /// reading timestamp in milliseconds
-    pub timestamp_ms: u64,
-    /// pressure in hPa (optional, bme680 only)
-    pub pressure: Option<f32>,
-    /// gas resistance in KOhms (optional, bme680 only)
-    pub gas_resistance: Option<f32>,
-    /// IAQ Score 0-500 (optional, bme680 only)
-    pub iaq_score: Option<u16>,
+#[derive(Clone)]
+struct ApiState {
+    state: Arc<RwLock<AppState>>,
+    runtime: runtime::WasmRuntime,
+    config: config::HostConfig,
 }
 
 // ==============================================================================
@@ -152,15 +124,26 @@ async fn main() -> Result<()> {
         }
     };
     
-    // step 4: start the web server in background
-    let web_state = state.clone();
-    let web_runtime = runtime.clone();
-    tokio::spawn(async move {
-        println!("[STARTUP] ✓ Dashboard live at http://0.0.0.0:3000");
-        if let Err(e) = run_server(web_state, web_runtime).await {
-            eprintln!("[ERROR] Web server error: {}", e);
-        }
-    });
+    // step 4: start the web server in background (if hub or standalone)
+    let role = config.cluster.role.clone();
+    if role == "hub" || role == "standalone" {
+        let web_state = state.clone();
+        let web_runtime = runtime.clone();
+        let web_config = config.clone();
+        tokio::spawn(async move {
+            println!("[STARTUP] ✓ Dashboard live at http://0.0.0.0:3000");
+            let state_ctx = ApiState {
+                state: web_state,
+                runtime: web_runtime,
+                config: web_config,
+            };
+            if let Err(e) = run_server(state_ctx).await {
+                eprintln!("[ERROR] Web server error: {}", e);
+            }
+        });
+    } else {
+        println!("[STARTUP] Running in SPOKE mode (no web server)");
+    }
     
     // step 5: main polling loop
     let poll_interval = config.polling.interval_seconds;
@@ -175,9 +158,6 @@ async fn main() -> Result<()> {
         if config.plugins.dht22.enabled {
             match runtime.poll_sensors().await {
                 Ok(readings) => {
-                    if show_data {
-                        // Logging handled by plugin
-                    }
                     all_readings.extend(readings);
                 }
                 Err(e) => {
@@ -190,9 +170,6 @@ async fn main() -> Result<()> {
         if config.plugins.bme680.enabled {
             match runtime.poll_bme680().await {
                 Ok(readings) => {
-                    if show_data {
-                        // Logging handled by plugin
-                    }
                     all_readings.extend(readings);
                 }
                 Err(e) => {
@@ -204,8 +181,9 @@ async fn main() -> Result<()> {
         // 3. Poll Pi Monitor (if enabled)
         if config.plugins.pi_monitor.enabled {
             match runtime.poll_pi_monitor().await {
-                Ok(_cpu_temp) => {
-                    // CPU temp is logged inside the plugin
+                Ok(readings) => {
+                    // Now returns a Vec<SensorReading> with full system stats
+                    all_readings.extend(readings);
                 }
                 Err(e) => {
                     println!("[PI] ⚠ Monitor error: {}", e);
@@ -217,12 +195,45 @@ async fn main() -> Result<()> {
         tokio::task::spawn_blocking(|| gpio::sync_leds()).await.ok();
 
         if !all_readings.is_empty() {
-             let mut state_guard = state.write().await;
-             state_guard.readings = all_readings;
-             state_guard.last_update = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
+             // If we are a HUB or STANDALONE, update local state
+                  println!("[LOOP] Updating local state with {} readings (Role: {})", all_readings.len(), config.cluster.role);
+                  let mut state_guard = state.write().await;
+                  
+                  // Update readings
+                  for new_r in all_readings.clone() {
+                      if let Some(pos) = state_guard.readings.iter().position(|r| r.sensor_id == new_r.sensor_id) {
+                          state_guard.readings[pos] = new_r;
+                      } else {
+                          state_guard.readings.push(new_r);
+                      }
+                  }
+                  
+                  state_guard.last_update = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                  println!("[LOOP] State updated. Count: {}", state_guard.readings.len());
+             
+             // If we are a SPOKE, push data to HUB
+             if config.cluster.role == "spoke" {
+                 let hub_url = config.cluster.hub_url.clone();
+                 if !hub_url.is_empty() {
+                     let client = reqwest::Client::new();
+                     match client.post(&hub_url)
+                         .json(&all_readings)
+                         .send()
+                         .await {
+                             Ok(resp) => {
+                                 if resp.status().is_success() {
+                                    // println!("[PUSH] ✓ Data sent to hub");
+                                 } else {
+                                     println!("[PUSH] ⚠ Hub rejected data: {}", resp.status());
+                                 }
+                             },
+                             Err(e) => println!("[PUSH] ⚠ Failed to send to hub: {}", e),
+                         }
+                 }
+             }
         }
         
         tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
@@ -235,84 +246,89 @@ async fn main() -> Result<()> {
 // ==============================================================================
 
 async fn run_server(
-    state: Arc<RwLock<AppState>>,
-    runtime: runtime::WasmRuntime,
+    state: ApiState
 ) -> Result<()> {
     let app = Router::new()
         .route("/", get(dashboard_handler))
-        .route("/api", get(api_handler))
+        .route("/api/readings", get(api_handler)) // Move legacy /api to here for clarity
+        .route("/push", post(push_handler))   // SIMPLIFIED PUSH
         .route("/api/buzzer", post(buzzer_handler))
+        .fallback(fallback_handler)
         .layer(CorsLayer::permissive())
-        .with_state((state, runtime));
+        .with_state(state);
     
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn dashboard_handler(
-    State((state, runtime)): State<(Arc<RwLock<AppState>>, runtime::WasmRuntime)>,
-) -> Html<String> {
-    let state = state.read().await;
-    
-    // Extract sensor readings
-    let dht = state.readings.iter().find(|x| x.pressure.is_none());
-    let bme = state.readings.iter().find(|x| x.pressure.is_some());
-    
-    // Get system stats
-    let cpu_temp = gpio::get_cpu_temp();
-    let (mem_used, mem_total) = gpio::get_memory_usage();
-    let uptime = gpio::get_uptime();
-    
-    // Build JSON object with all sensor data
-    // This allows adding new sensors without modifying this code!
-    let sensor_data = serde_json::json!({
-        "dht22": {
-            "temp": dht.map(|x| x.temperature).unwrap_or(0.0),
-            "humidity": dht.map(|x| x.humidity).unwrap_or(0.0)
-        },
-        "bme680": {
-            "temp": bme.map(|x| x.temperature).unwrap_or(0.0),
-            "humidity": bme.map(|x| x.humidity).unwrap_or(0.0),
-            "pressure": bme.and_then(|x| x.pressure).unwrap_or(-1.0),
-            "gas": bme.and_then(|x| x.gas_resistance).unwrap_or(-1.0),
-            "iaq": bme.and_then(|x| x.iaq_score).unwrap_or(0)
-        },
-        "pi": {
-            "cpu_temp": cpu_temp,
-            "memory_used_mb": mem_used,
-            "memory_total_mb": mem_total,
-            "uptime_seconds": uptime
-        }
-    });
-    
-    let json_str = sensor_data.to_string();
+async fn fallback_handler(req: axum::http::Request<axum::body::Body>) -> (axum::http::StatusCode, String) {
+    println!("[WEB] FALLBACK: {} {}", req.method(), req.uri().path());
+    (axum::http::StatusCode::NOT_FOUND, "Not Found".to_string())
+}
 
-    // Update OLED (fire and forget, just log errors)
-    // This runs the python logic in plugins/oled/app.py
-    if let Err(e) = runtime.update_oled(&json_str).await {
-        // Only log if it's not the "plugin not loaded" error (which is normal if disabled)
+async fn dashboard_handler(
+    State(state): State<ApiState>,
+) -> Html<String> {
+    let app_state = state.state.read().await;
+    println!("[WEB] Rendering dashboard with {} readings", app_state.readings.len());
+    
+    // Generic Sensor Data Construction
+    let mut sensor_data = serde_json::Map::new();
+    
+    for reading in &app_state.readings {
+        // Map "dht22-*" -> "dht22"
+        if reading.sensor_id.contains("dht22") {
+            sensor_data.insert("dht22".to_string(), reading.data.clone());
+        }
+        // Map "bme680-*" -> "bme680"
+        else if reading.sensor_id.contains("bme680") {
+            // Flatten generic data into the object? Or just replace?
+            // Dashboard expects {temp, humidity, pressure...} which is exactly what data is.
+            sensor_data.insert("bme680".to_string(), reading.data.clone());
+        }
+        // Map "system_stats" -> "pi" (Legacy/Hub) or "pi4" (Spoke)
+        else if reading.sensor_id.contains("system_stats") {
+            // If it's the Hub's own stats, map to "pi" for main dashboard card
+            if reading.sensor_id.contains("revpi-hub") {
+                sensor_data.insert("pi".to_string(), reading.data.clone());
+            } 
+            // If it's the Pi 4 Spoke, map to "pi4" for the secondary card
+            else if reading.sensor_id.contains("pi4-node-1") {
+                sensor_data.insert("pi4".to_string(), reading.data.clone());
+            }
+            // Fallback for others
+            else {
+                 sensor_data.insert(reading.sensor_id.clone(), reading.data.clone());
+            }
+        }
+        // Future sensors could just be inserted by raw ID
+        else {
+             sensor_data.insert(reading.sensor_id.clone(), reading.data.clone());
+        }
+    }
+    
+    // Fallback: If no system stats in readings (e.g. pi-monitor disabled),
+    // we can optionally grab local stats here?
+    // No, let's rely on the plugin. If plugin disabled, "pi" key might be missing, 
+    // leading to empty dashboard card. That is correct behavior (Visual feedback of disabled plugin).
+
+    let final_json = serde_json::Value::Object(sensor_data);
+    let json_str = final_json.to_string();
+
+    // Update OLED 
+    if let Err(e) = state.runtime.update_oled(&json_str).await {
         if !e.to_string().contains("not loaded") {
             println!("[ERROR] OLED update failed: {}", e);
         }
     }
     
-    // Call python wasm to render html!
-    match runtime.render_dashboard(&json_str).await {
+    // Render HTML
+    match state.runtime.render_dashboard(&json_str).await {
         Ok(html) => Html(html),
         Err(e) => {
-            // render error page if plugin fails
             Html(format!(
-                r#"<!doctype html>
-<html>
-<head><title>error</title></head>
-<body style="font-family: system-ui; padding: 2rem; background: #1a1a2e; color: #eee;">
-    <h1 style="color: #ff6b6b;">⚠️ dashboard error</h1>
-    <p>failed to render dashboard from python wasm plugin:</p>
-    <pre style="background: #16213e; padding: 1rem; border-radius: 8px; overflow-x: auto;">{}</pre>
-    <p style="color: #888;">check that dashboard.wasm is built and located at plugins/dashboard/dashboard.wasm</p>
-</body>
-</html>"#,
+                r#"<!doctype html><html><body><h1>⚠️ dashboard error</h1><pre>{}</pre></body></html>"#,
                 html_escape(&format!("{:#}", e))
             ))
         }
@@ -322,10 +338,10 @@ async fn dashboard_handler(
 /// json api endpoint for programmatic access
 /// returns current sensor readings as json
 async fn api_handler(
-    State((state, _)): State<(Arc<RwLock<AppState>>, runtime::WasmRuntime)>,
+    State(state): State<ApiState>,
 ) -> Json<AppState> {
-    let state = state.read().await;
-    Json(state.clone())
+    let app_state = state.state.read().await;
+    Json(app_state.clone())
 }
 
 /// buzzer control params
@@ -337,19 +353,21 @@ struct BuzzerParams {
 /// buzzer control endpoint
 /// POST /api/buzzer?action=beep|beep3|long
 async fn buzzer_handler(
+    State(state): State<ApiState>,
     Query(params): Query<BuzzerParams>,
 ) -> Json<serde_json::Value> {
+    let pin = state.config.buzzer.gpio_pin;
     match params.action.as_str() {
         "beep" => {
-            tokio::task::spawn_blocking(|| gpio::buzz(200));
+            tokio::task::spawn_blocking(move || gpio::buzz(pin, 200));
             Json(serde_json::json!({"status": "ok", "action": "beep"}))
         }
         "beep3" => {
-            tokio::task::spawn_blocking(|| gpio::beep(3, 100, 100));
+            tokio::task::spawn_blocking(move || gpio::beep(pin, 3, 100, 100));
             Json(serde_json::json!({"status": "ok", "action": "beep3"}))
         }
         "long" => {
-            tokio::task::spawn_blocking(|| gpio::buzz(5000));  // 5 second beep
+            tokio::task::spawn_blocking(move || gpio::buzz(pin, 5000));  // 5 second beep
             Json(serde_json::json!({"status": "ok", "action": "long"}))
         }
         _ => {
@@ -364,4 +382,30 @@ fn html_escape(s: &str) -> String {
      .replace('<', "&lt;")
      .replace('>', "&gt;")
      .replace('"', "&quot;")
+}
+
+/// receive data from spokes
+/// POST /api/readings
+async fn push_handler(
+    State(state_ctx): State<ApiState>,
+    Json(readings): Json<Vec<SensorReading>>,
+) -> Json<serde_json::Value> {
+    println!("[PUSH] Received {} readings from spoke", readings.len());
+    let mut state = state_ctx.state.write().await;
+    
+    for new_r in readings {
+        if let Some(pos) = state.readings.iter().position(|r| r.sensor_id == new_r.sensor_id) {
+            state.readings[pos] = new_r;
+        } else {
+            state.readings.push(new_r);
+        }
+    }
+    
+    state.last_update = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    println!("[PUSH] Shared state updated. Reading count: {}", state.readings.len());
+    Json(serde_json::json!({"status": "ok"}))
 }

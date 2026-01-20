@@ -29,7 +29,7 @@
 //! ==============================================================================
 
 use crate::gpio;
-use crate::SensorReading;
+use crate::domain::SensorReading;
 
 use anyhow::{Result, Context, anyhow};
 use crate::config::HostConfig;
@@ -106,6 +106,7 @@ use oled_bindings::OledPlugin;
 pub struct HostState {
     ctx: WasiCtx,
     table: ResourceTable,
+    pub config: HostConfig,
 }
 
 // wasiview trait is required for wasmtime_wasi integration
@@ -126,7 +127,9 @@ impl dht22_bindings::demo::plugin::gpio_provider::Host for HostState {
     ///
     /// this is the CAPABILITY boundary. the sandboxed python code calls
     /// gpio_provider.read_dht22(pin) and we handle the actual hardware access.
-    async fn read_dht22(&mut self, pin: u8) -> Result<(f32, f32), String> {
+    async fn read_dht22(&mut self, _pin: u8) -> Result<(f32, f32), String> {
+        // Enforce pin from HostConfig
+        let pin = self.config.sensors.dht22.gpio_pin;
         // offload blocking io to dedicated thread
         tokio::task::spawn_blocking(move || {
             gpio::read_dht22(pin)
@@ -147,7 +150,15 @@ impl dht22_bindings::demo::plugin::gpio_provider::Host for HostState {
     }
     
     /// read bme680 sensor via i2c - called by python wasm plugin
-    async fn read_bme680(&mut self, i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+    async fn read_bme680(&mut self, _i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+        // Enforce address from HostConfig
+        let i2c_addr_str = &self.config.sensors.bme680.i2c_address;
+        let i2c_addr = if i2c_addr_str.starts_with("0x") {
+            u8::from_str_radix(&i2c_addr_str[2..], 16).unwrap_or(0x77)
+        } else {
+            i2c_addr_str.parse().unwrap_or(0x77)
+        };
+
         // offload blocking io
         tokio::task::spawn_blocking(move || {
             gpio::read_bme680(i2c_addr)
@@ -223,15 +234,17 @@ impl dht22_bindings::demo::plugin::led_controller::Host for HostState {
 impl dht22_bindings::demo::plugin::buzzer_controller::Host for HostState {
     /// sound the buzzer for a duration
     async fn buzz(&mut self, duration_ms: u32) {
+        let pin = self.config.buzzer.gpio_pin;
         tokio::task::spawn_blocking(move || {
-            gpio::buzz(duration_ms);
+            gpio::buzz(pin, duration_ms);
         }).await.ok();
     }
     
     /// beep pattern - multiple short beeps with intervals
     async fn beep(&mut self, count: u8, duration_ms: u32, interval_ms: u32) {
+        let pin = self.config.buzzer.gpio_pin;
         tokio::task::spawn_blocking(move || {
-            gpio::beep(count, duration_ms, interval_ms);
+            gpio::beep(pin, count, duration_ms, interval_ms);
         }).await.ok();
     }
 }
@@ -241,7 +254,8 @@ impl dht22_bindings::demo::plugin::buzzer_controller::Host for HostState {
 // ==============================================================================
 
 impl pi_monitor_bindings::demo::plugin::gpio_provider::Host for HostState {
-    async fn read_dht22(&mut self, pin: u8) -> Result<(f32, f32), String> {
+    async fn read_dht22(&mut self, _pin: u8) -> Result<(f32, f32), String> {
+        let pin = self.config.sensors.dht22.gpio_pin;
         tokio::task::spawn_blocking(move || gpio::read_dht22(pin))
             .await
             .map_err(|e| format!("task join error: {}", e))?
@@ -256,7 +270,13 @@ impl pi_monitor_bindings::demo::plugin::gpio_provider::Host for HostState {
         gpio::get_cpu_temp()
     }
     
-    async fn read_bme680(&mut self, i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+    async fn read_bme680(&mut self, _i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+        let i2c_addr_str = &self.config.sensors.bme680.i2c_address;
+        let i2c_addr = if i2c_addr_str.starts_with("0x") {
+            u8::from_str_radix(&i2c_addr_str[2..], 16).unwrap_or(0x77)
+        } else {
+            i2c_addr_str.parse().unwrap_or(0x77)
+        };
         tokio::task::spawn_blocking(move || gpio::read_bme680(i2c_addr))
             .await
             .map_err(|e| format!("task join error: {}", e))?
@@ -335,6 +355,7 @@ impl<T> PluginState<T> {
 #[derive(Clone)]
 pub struct WasmRuntime {
     engine: Engine,
+    config: HostConfig,
     // Shared state via Arc<Mutex> to allow cloning WasmRuntime
     dht22_plugin: Arc<Mutex<Option<PluginState<Dht22Plugin>>>>,
     pi_monitor_plugin: Arc<Mutex<Option<PluginState<PiMonitorPlugin>>>>,
@@ -352,9 +373,9 @@ impl WasmRuntime {
         let engine = Engine::new(&wasm_config)?;
 
         // --- Helper to init state ---
-        let create_host_state = || {
+        let create_host_state = |conf: HostConfig| {
              let wasi = WasiCtxBuilder::new().inherit_stdio().build();
-             HostState { ctx: wasi, table: ResourceTable::new() }
+             HostState { ctx: wasi, table: ResourceTable::new(), config: conf }
         };
 
         // 1. DHT22 Plugin
@@ -368,7 +389,7 @@ impl WasmRuntime {
             wasmtime_wasi::add_to_linker_async(&mut linker)?;
             dht22_bindings::Dht22Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
             
-            let mut store = Store::new(&engine, create_host_state());
+            let mut store = Store::new(&engine, create_host_state(config.clone()));
             let dht22_instance = Dht22Plugin::instantiate_async(&mut store, &dht22_component, &linker).await
                 .context("failed to instantiate dht22 plugin")?;
             println!("[DEBUG] Loaded dht22 plugin.");
@@ -395,7 +416,7 @@ impl WasmRuntime {
             wasmtime_wasi::add_to_linker_async(&mut linker)?;
             // dashboard_bindings::DashboardPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
             
-            let mut store_dash = Store::new(&engine, create_host_state());
+            let mut store_dash = Store::new(&engine, create_host_state(config.clone()));
             let dashboard_instance = DashboardPlugin::instantiate_async(&mut store_dash, &dashboard_component, &linker).await
                 .context("failed to instantiate dashboard plugin")?;
             println!("[DEBUG] Loaded dashboard plugin.");
@@ -422,7 +443,7 @@ impl WasmRuntime {
             wasmtime_wasi::add_to_linker_async(&mut linker)?;
             bme680_bindings::Bme680Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
             
-            let mut store_bme = Store::new(&engine, create_host_state());
+            let mut store_bme = Store::new(&engine, create_host_state(config.clone()));
             let bme680_instance = Bme680Plugin::instantiate_async(&mut store_bme, &bme680_component, &linker).await
                 .context("failed to instantiate bme680 plugin")?;
             println!("[DEBUG] Loaded bme680 plugin.");
@@ -449,7 +470,7 @@ impl WasmRuntime {
             wasmtime_wasi::add_to_linker_async(&mut linker)?;
             pi_monitor_bindings::PiMonitorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
             
-            let mut store_pi = Store::new(&engine, create_host_state());
+            let mut store_pi = Store::new(&engine, create_host_state(config.clone()));
             let pi_monitor_instance = PiMonitorPlugin::instantiate_async(&mut store_pi, &pi_monitor_component, &linker).await
                 .context("failed to instantiate pi-monitor plugin")?;
             println!("[DEBUG] Loaded pi-monitor plugin.");
@@ -476,7 +497,7 @@ impl WasmRuntime {
             wasmtime_wasi::add_to_linker_async(&mut linker)?;
             oled_bindings::OledPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
             
-            let mut store_oled = Store::new(&engine, create_host_state());
+            let mut store_oled = Store::new(&engine, create_host_state(config.clone()));
             let oled_instance = OledPlugin::instantiate_async(&mut store_oled, &oled_component, &linker).await
                 .context("failed to instantiate oled plugin")?;
             println!("[DEBUG] Loaded oled plugin.");
@@ -494,19 +515,21 @@ impl WasmRuntime {
 
         Ok(Self {
             engine,
-            dht22_plugin,
-            pi_monitor_plugin,
-            dashboard_plugin,
-            bme680_plugin,
-            oled_plugin,
+            config: config.clone(),
+            dht22_plugin: dht22_plugin,
+            pi_monitor_plugin: pi_monitor_plugin,
+            dashboard_plugin: dashboard_plugin,
+            bme680_plugin: bme680_plugin,
+            oled_plugin: oled_plugin,
         })
     }
     
     /// check for and apply hot reloads
     pub async fn check_hot_reload(&self) {
-        let create_host_state = || {
+        // --- Helper to init state ---
+        let create_host_state = |conf: HostConfig| {
              let wasi = WasiCtxBuilder::new().inherit_stdio().build();
-             HostState { ctx: wasi, table: ResourceTable::new() }
+             HostState { ctx: wasi, table: ResourceTable::new(), config: conf }
         };
 
         // 1. DHT22
@@ -530,7 +553,7 @@ impl WasmRuntime {
                          let mut linker = Linker::new(&self.engine);
                          wasmtime_wasi::add_to_linker_async(&mut linker)?;
                          dht22_bindings::Dht22Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
-                         let mut store = Store::new(&self.engine, create_host_state());
+                         let mut store = Store::new(&self.engine, create_host_state(self.config.clone()));
                          let instance = Dht22Plugin::instantiate_async(&mut store, &component, &linker).await?;
                          Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
                      }.await;
@@ -559,7 +582,7 @@ impl WasmRuntime {
                          let mut linker = Linker::new(&self.engine);
                          wasmtime_wasi::add_to_linker_async(&mut linker)?;
                          // dashboard_bindings::DashboardPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
-                         let mut store = Store::new(&self.engine, create_host_state());
+                         let mut store = Store::new(&self.engine, create_host_state(self.config.clone()));
                          let instance = DashboardPlugin::instantiate_async(&mut store, &component, &linker).await?;
                          Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
                      }.await;
@@ -588,7 +611,7 @@ impl WasmRuntime {
                          let mut linker = Linker::new(&self.engine);
                          wasmtime_wasi::add_to_linker_async(&mut linker)?;
                          bme680_bindings::Bme680Plugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
-                         let mut store = Store::new(&self.engine, create_host_state());
+                         let mut store = Store::new(&self.engine, create_host_state(self.config.clone()));
                          let instance = Bme680Plugin::instantiate_async(&mut store, &component, &linker).await?;
                          Ok(PluginState { /*component,*/ path, last_modified: SystemTime::now(), store, instance })
                      }.await;
@@ -600,39 +623,89 @@ impl WasmRuntime {
                  }
              }
         }
-    }
+ 
+         // 4. PI MONITOR
+         let needs_reload = {
+             let guard = self.pi_monitor_plugin.lock().await;
+             guard.as_ref().map(|p| p.needs_reload()).unwrap_or(false)
+         };
+         if needs_reload {
+              println!("[HOT RELOAD] Reloading pi-monitor plugin...");
+              { let mut guard = self.pi_monitor_plugin.lock().await;
+                  if let Some(old) = guard.as_ref() {
+                      let path = old.path.clone();
+                      let res: Result<PluginState<PiMonitorPlugin>> = async {
+                          let component = Component::from_file(&self.engine, &path)?;
+                          let mut linker = Linker::new(&self.engine);
+                          wasmtime_wasi::add_to_linker_async(&mut linker)?;
+                          pi_monitor_bindings::PiMonitorPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+                          let mut store = Store::new(&self.engine, create_host_state(self.config.clone()));
+                          let instance = PiMonitorPlugin::instantiate_async(&mut store, &component, &linker).await?;
+                          Ok(PluginState { path, last_modified: SystemTime::now(), store, instance })
+                      }.await;
+                      
+                      match res {
+                          Ok(new_state) => { *guard = Some(new_state); println!("[OK] Pi-Monitor reloaded"); }
+                          Err(e) => println!("[ERR] Pi-Monitor reload failed: {:#}", e),
+                      }
+                  }
+              }
+         }
+ 
+         // 5. OLED
+         let needs_reload = {
+             let guard = self.oled_plugin.lock().await;
+             guard.as_ref().map(|p| p.needs_reload()).unwrap_or(false)
+         };
+         if needs_reload {
+              println!("[HOT RELOAD] Reloading oled plugin...");
+              { let mut guard = self.oled_plugin.lock().await;
+                  if let Some(old) = guard.as_ref() {
+                      let path = old.path.clone();
+                      let res: Result<PluginState<OledPlugin>> = async {
+                          let component = Component::from_file(&self.engine, &path)?;
+                          let mut linker = Linker::new(&self.engine);
+                          wasmtime_wasi::add_to_linker_async(&mut linker)?;
+                          oled_bindings::OledPlugin::add_to_linker(&mut linker, |s: &mut HostState| s)?;
+                          let mut store = Store::new(&self.engine, create_host_state(self.config.clone()));
+                          let instance = OledPlugin::instantiate_async(&mut store, &component, &linker).await?;
+                          Ok(PluginState { path, last_modified: SystemTime::now(), store, instance })
+                      }.await;
+                      
+                      match res {
+                          Ok(new_state) => { *guard = Some(new_state); println!("[OK] OLED reloaded"); }
+                          Err(e) => println!("[ERR] OLED reload failed: {:#}", e),
+                      }
+                  }
+              }
+         }
+     }
     
     /// poll dht22 sensor by calling the python wasm plugin
     pub async fn poll_sensors(&self) -> Result<Vec<SensorReading>> {
         self.check_hot_reload().await;
         
-        // get component clone safely
         let mut guard = self.dht22_plugin.lock().await;
         let plugin = guard.as_mut()
             .ok_or_else(|| anyhow!("dht22 plugin not loaded"))?;
         
-        // Call the poll function using persistent store
         let readings = plugin.instance.demo_plugin_dht22_logic()
             .call_poll(&mut plugin.store)
             .await
             .context("dht22 poll failed")?;
         
-        // convert to our types
         Ok(readings.into_iter().map(|r| SensorReading {
             sensor_id: r.sensor_id,
-            temperature: r.temperature,
-            humidity: r.humidity,
-            pressure: None,        // DHT22 has no pressure
-            gas_resistance: None,  // DHT22 has no gas sensor
-            iaq_score: None,       // DHT22 has no IAQ sensor
             timestamp_ms: r.timestamp_ms,
+            data: serde_json::json!({
+                "temperature": r.temperature,
+                "humidity": r.humidity
+            }),
         }).collect())
     }
 
     /// poll bme680 sensor
     pub async fn poll_bme680(&self) -> Result<Vec<SensorReading>> {
-        // self.check_hot_reload().await; // already checked
-        
         let mut guard = self.bme680_plugin.lock().await;
         let plugin = guard.as_mut()
             .ok_or_else(|| anyhow!("bme680 plugin not loaded"))?;
@@ -644,18 +717,20 @@ impl WasmRuntime {
 
         Ok(readings.into_iter().map(|r| SensorReading {
             sensor_id: r.sensor_id,
-            temperature: r.temperature,
-            humidity: r.humidity,
-            pressure: Some(r.pressure),
-            gas_resistance: Some(r.gas_resistance),
-            iaq_score: Some(r.iaq_score),
             timestamp_ms: r.timestamp_ms,
+            data: serde_json::json!({
+                "temperature": r.temperature,
+                "humidity": r.humidity,
+                "pressure": r.pressure,
+                "gas_resistance": r.gas_resistance,
+                "iaq_score": r.iaq_score,
+                "iaq_accuracy": r.iaq_accuracy
+            }),
         }).collect())
     }
     
-    /// poll pi monitor for system stats (CPU temp, etc.)
-    /// Returns CPU temperature for use in dashboard
-    pub async fn poll_pi_monitor(&self) -> Result<f32> {
+    /// poll pi monitor for system stats
+    pub async fn poll_pi_monitor(&self) -> Result<Vec<SensorReading>> {
         let mut guard = self.pi_monitor_plugin.lock().await;
         let plugin = guard.as_mut()
             .ok_or_else(|| anyhow!("pi-monitor plugin not loaded"))?;
@@ -665,8 +740,18 @@ impl WasmRuntime {
             .await
             .context("pi-monitor poll failed")?;
         
-
-        Ok(stats.cpu_temp)
+        // Return as a generic reading
+        Ok(vec![SensorReading {
+            sensor_id: format!("system_stats::{}", self.config.cluster.node_id), // Unique ID per node
+            timestamp_ms: stats.timestamp_ms,
+            data: serde_json::json!({
+                "cpu_temp": stats.cpu_temp,
+                "cpu_usage": stats.cpu_usage,
+                "memory_used_mb": stats.memory_used_mb,
+                "memory_total_mb": stats.memory_total_mb,
+                "uptime_seconds": stats.uptime_seconds
+            }),
+        }])
     }
     /// render dashboard html using the python wasm plugin
     /// 
@@ -710,7 +795,8 @@ impl WasmRuntime {
 // (Rust treats generated traits from different bindgen! calls as distinct types)
 
 impl bme680_bindings::demo::plugin::gpio_provider::Host for HostState {
-    async fn read_dht22(&mut self, pin: u8) -> Result<(f32, f32), String> {
+    async fn read_dht22(&mut self, _pin: u8) -> Result<(f32, f32), String> {
+        let pin = self.config.sensors.dht22.gpio_pin;
         tokio::task::spawn_blocking(move || gpio::read_dht22(pin))
             .await
             .map_err(|e| format!("task join error: {}", e))?
@@ -725,7 +811,13 @@ impl bme680_bindings::demo::plugin::gpio_provider::Host for HostState {
         gpio::get_cpu_temp()
     }
     
-    async fn read_bme680(&mut self, i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+    async fn read_bme680(&mut self, _i2c_addr: u8) -> Result<(f32, f32, f32, f32), String> {
+        let i2c_addr_str = &self.config.sensors.bme680.i2c_address;
+        let i2c_addr = if i2c_addr_str.starts_with("0x") {
+            u8::from_str_radix(&i2c_addr_str[2..], 16).unwrap_or(0x77)
+        } else {
+            i2c_addr_str.parse().unwrap_or(0x77)
+        };
         tokio::task::spawn_blocking(move || gpio::read_bme680(i2c_addr))
             .await
             .map_err(|e| format!("task join error: {}", e))?

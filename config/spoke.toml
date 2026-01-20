@@ -1,0 +1,49 @@
+# ==============================================================================
+# WASI Host Configuration - SPOKE NODE (Sensor Client)
+# ==============================================================================
+
+[cluster]
+role = "spoke"
+# The Hub's push endpoint (Note: Renamed from /api/readings to /push for clarity)
+hub_url = "http://192.168.40.9:3000/push" 
+node_id = "pi4-node-1"
+
+[polling]
+interval_seconds = 5
+
+[sensors.dht22]
+gpio_pin = 4
+
+[sensors.bme680]
+i2c_address = "0x77"
+
+[leds]
+count = 11
+gpio_pin = 18
+brightness = 50
+
+[buzzer]
+gpio_pin = 17
+
+[logging]
+level = "info"
+show_sensor_data = true
+
+# ==============================================================================
+# Plugin Configuration
+# ==============================================================================
+
+[plugins.dht22]
+enabled = true # Enabled on Spoke
+led = 1
+
+[plugins.pi_monitor]
+enabled = true
+led = 0
+
+[plugins.bme680]
+enabled = true # Enabled on Spoke
+led = 2
+
+[plugins.dashboard]
+enabled = false # Disabled on Spoke (Headless)

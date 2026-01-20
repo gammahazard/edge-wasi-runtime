@@ -2,6 +2,27 @@
 ==============================================================================
 oled_plugin.py - SSD1306 OLED Display via Generic I2C
 ==============================================================================
+
+purpose:
+    this module implements the oled-logic interface defined in plugin.wit.
+    it receives JSON sensor data from the host and renders a simple display
+    showing temperature, humidity, and CPU stats on a 128x64 OLED.
+
+key features:
+    - pure python i2c driver for ssd1306 (no external dependencies)
+    - uses the generic i2c interface from the host (not direct hardware)
+    - simple pixel-based text rendering (no font library needed)
+
+relationships:
+    - implements: ../../wit/plugin.wit (oled-logic interface)
+    - imports: i2c (from rust host)
+    - loaded by: ../../host/src/runtime.rs
+    - called by: ../../host/src/main.rs (after dashboard render)
+
+build command:
+    componentize-py -d ../../wit -w oled-plugin componentize app -o oled.wasm
+
+==============================================================================
 """
 
 import wit_world
@@ -101,9 +122,9 @@ class OledLogic(OledLogic):
             print(f"📺 [OLED] Error parsing JSON: {sensor_data[:20]}...")
             return
 
-        # 2. Extract Values
+        # 2. Extract Values (note: API returns 'temperature', not 'temp')
         dht = data.get("dht22", {})
-        temp = dht.get("temp", 0.0)
+        temp = dht.get("temperature", 0.0)  # Fixed: was 'temp'
         hum = dht.get("humidity", 0.0)
         
         pi = data.get("pi", {})

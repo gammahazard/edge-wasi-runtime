@@ -10,16 +10,16 @@
 #
 # ==============================================================================
 
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.84-bookworm AS builder
 
 # Install ARM64 cross-compilation tools (for building on x86)
 # Skip if building natively on Pi/RevPi
 RUN dpkg --add-architecture arm64 && \
     apt-get update && \
     apt-get install -y \
-        gcc-aarch64-linux-gnu \
-        libc6-dev-arm64-cross \
-        pkg-config \
+    gcc-aarch64-linux-gnu \
+    libc6-dev-arm64-cross \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up cross-compilation for ARM64
@@ -47,10 +47,10 @@ FROM debian:bookworm-slim
 # Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y \
-        python3 \
-        python3-pip \
-        python3-rpi.gpio \
-        i2c-tools \
+    python3 \
+    python3-pip \
+    python3-rpi.gpio \
+    i2c-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python libraries for sensor access

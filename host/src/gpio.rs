@@ -479,7 +479,7 @@ pub fn clear_leds() {
 /// sound the buzzer for a duration
 ///
 /// handles the active-low relay logic internally.
-pub fn buzz(duration_ms: u32) {
+pub fn buzz(pin: u8, duration_ms: u32) {
     use std::process::Command;
     
     let script = format!(
@@ -487,13 +487,13 @@ pub fn buzz(duration_ms: u32) {
 import RPi.GPIO as GPIO
 import time
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(17, GPIO.OUT)
-GPIO.output(17, GPIO.LOW)  # active low - LOW = buzzer on
-time.sleep({} / 1000.0)
-GPIO.output(17, GPIO.HIGH)  # HIGH = buzzer off
-GPIO.cleanup(17)
+GPIO.setup({0}, GPIO.OUT)
+GPIO.output({0}, GPIO.LOW)  # active low - LOW = buzzer on
+time.sleep({1} / 1000.0)
+GPIO.output({0}, GPIO.HIGH)  # HIGH = buzzer off
+GPIO.cleanup({0})
 "#,
-        duration_ms
+        pin, duration_ms
     );
     
     let _ = Command::new("python3")
@@ -502,7 +502,7 @@ GPIO.cleanup(17)
 }
 
 /// beep pattern - multiple short beeps with intervals
-pub fn beep(count: u8, duration_ms: u32, interval_ms: u32) {
+pub fn beep(pin: u8, count: u8, duration_ms: u32, interval_ms: u32) {
     use std::process::Command;
     
     let script = format!(
@@ -510,16 +510,16 @@ pub fn beep(count: u8, duration_ms: u32, interval_ms: u32) {
 import RPi.GPIO as GPIO
 import time
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(17, GPIO.OUT)
-GPIO.output(17, GPIO.HIGH)  # start with buzzer off
-for _ in range({}):
-    GPIO.output(17, GPIO.LOW)  # buzzer on
-    time.sleep({} / 1000.0)
-    GPIO.output(17, GPIO.HIGH)  # buzzer off
-    time.sleep({} / 1000.0)
-GPIO.cleanup(17)
+GPIO.setup({0}, GPIO.OUT)
+GPIO.output({0}, GPIO.HIGH)  # start with buzzer off
+for _ in range({1}):
+    GPIO.output({0}, GPIO.LOW)  # buzzer on
+    time.sleep({2} / 1000.0)
+    GPIO.output({0}, GPIO.HIGH)  # buzzer off
+    time.sleep({3} / 1000.0)
+GPIO.cleanup({0})
 "#,
-        count, duration_ms, interval_ms
+        pin, count, duration_ms, interval_ms
     );
     
     let _ = Command::new("python3")

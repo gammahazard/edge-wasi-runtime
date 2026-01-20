@@ -17,6 +17,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "🔨 Building Python WASM plugins..."
+
+# Activate wasi-env if it exists (for Hub deployment)
+if [ -d "$HOME/wasi-env" ]; then
+    echo "📦 Activating wasi-env..."
+    source "$HOME/wasi-env/bin/activate"
+elif [ -d "../../wasi-env" ]; then
+    echo "📦 Activating wasi-env from relative path..."
+    source "../../wasi-env/bin/activate"
+fi
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Build DHT22 plugin

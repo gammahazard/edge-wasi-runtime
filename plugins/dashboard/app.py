@@ -47,26 +47,35 @@ class DashboardLogic(DashboardLogic):
         
         # Extract values with defaults
         dht = data.get("dht22", {})
-        dht_temp = dht.get("temp", 0.0)
+        dht_temp = dht.get("temperature", 0.0)  # API returns 'temperature'
         dht_hum = dht.get("humidity", 0.0)
         
         bme = data.get("bme680", {})
-        bme_temp = bme.get("temp", 0.0)
+        bme_temp = bme.get("temperature", 0.0)  # API returns 'temperature'
         bme_hum = bme.get("humidity", 0.0)
         pressure = bme.get("pressure", -1.0)
-        gas = bme.get("gas", -1.0)
-        iaq = bme.get("iaq", 0)
+        gas = bme.get("gas_resistance", -1.0)   # API returns 'gas_resistance'
+        iaq = bme.get("iaq_score", 0)           # API returns 'iaq_score'
         
-        pi = data.get("pi", {})
-        cpu_temp = pi.get("cpu_temp", 0.0)
-        memory_used_mb = pi.get("memory_used_mb", 0)
-        memory_total_mb = pi.get("memory_total_mb", 0)
-        uptime_seconds = pi.get("uptime_seconds", 0)
+        # Parse Hub (RevPi) Data
+        pi_hub = data.get("pi", {})
+        cpu_temp = pi_hub.get("cpu_temp", 0.0)
+        memory_used_mb = pi_hub.get("memory_used_mb", 0)
+        memory_total_mb = pi_hub.get("memory_total_mb", 0)
+        uptime_seconds = pi_hub.get("uptime_seconds", 0)
+
+        # Parse Spoke Pi 4 Data (Optional)
+        pi4 = data.get("pi4", {})
+        has_pi4 = "cpu_temp" in pi4
+        pi4_temp = pi4.get("cpu_temp", 0.0)
+        pi4_ram_used = pi4.get("memory_used_mb", 0)
+        pi4_ram_total = pi4.get("memory_total_mb", 0)
         
         # Determine Status Colors
         dht_status = "ok" if dht_temp < 28.0 else "danger"
         bme_status = "ok" if iaq < 100 else "warning" if iaq < 200 else "danger"
         cpu_status = "ok" if cpu_temp < 60.0 else "warning" if cpu_temp < 75.0 else "danger"
+        pi4_status = "ok" if pi4_temp < 60.0 else "warning" if pi4_temp < 75.0 else "danger"
         
         # Calculate uptime
         up_h = uptime_seconds // 3600
@@ -83,6 +92,20 @@ class DashboardLogic(DashboardLogic):
             else: aq_text = "BAD"
         elif gas > 0 and iaq == 0:
             aq_text = "CALIB..."
+            
+        # Optional Pi 4 Card HTML
+        pi4_html = ""
+        if has_pi4:
+            pi4_html = f"""
+            <div class="card {pi4_status}">
+                <div class="label">>> SPOKE_PI4</div>
+                <div class="value">{pi4_temp:.1f}<span class="unit">°C</span></div>
+                <div class="metric-grid">
+                    <div class="metric"><span>RAM_USED</span>{pi4_ram_used} MB</div>
+                    <div class="metric"><span>RAM_MAX</span>{pi4_ram_total} MB</div>
+                </div>
+            </div>
+            """
 
         return f"""
 <!DOCTYPE html>
@@ -282,15 +305,18 @@ class DashboardLogic(DashboardLogic):
             </div>
         </div>
 
-        <!-- SYSTEM -->
+        <!-- SYSTEM (HUB) -->
         <div class="card {cpu_status}">
-            <div class="label">>> SYSTEM_CORE</div>
+            <div class="label">>> REVPI_HUB</div>
             <div class="value">{cpu_temp:.1f}<span class="unit">°C</span></div>
             <div class="metric-grid">
                 <div class="metric"><span>RAM_USED</span>{memory_used_mb} MB</div>
                 <div class="metric"><span>RAM_MAX</span>{memory_total_mb} MB</div>
             </div>
         </div>
+        
+        <!-- SYSTEM (SPOKE) -->
+        {pi4_html}
     </div>
 
     <section class="controls">

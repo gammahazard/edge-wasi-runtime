@@ -8,82 +8,160 @@
 
 ![Dashboard Preview](screenshots/dashboard-full.png?v=2)
 
-A reference implementation demonstrating **Python WASM modules** reading **real sensor data** (DHT22, BME680) on a Raspberry Pi, using the **WASI Component Model** with a Rust host.
+A reference implementation demonstrating **Python WASM modules** reading **real sensor data** (DHT22, BME680) on Raspberry Pi devices, using the **WASI Component Model** with a Rust host. Supports **Hub/Spoke clustering** for multi-node deployments.
 
 ## The Key Demonstration
 
-This project demonstrates a **"Compile Once, Run Anything"** architecture. 
-The Rust Host acts as an **Operating System**, providing raw hardware access (I2C, SPI, GPIO), while Python plugins act as **Drivers** and **Apps**.
+This project demonstrates a **"Compile Once, Run Anything"** architecture.
+The Rust Host acts as an **Operating System**, providing hardware capabilities (I2C, GPIO, LEDs, Buzzer), while Python plugins act as **Drivers** and **Apps**.
 
 > 📘 **Deep Dive**: See [Generic HAL Architecture](docs/generic_hal_architecture.md).
 
-### 🚀 New in Phase 4: Decoupled UI
-- **Generic Dashboard**: The dashboard plugin now accepts `json_string` instead of typed args. Add new sensors **without touching Rust code**.
-- **OLED Plugin**: A new generic I2C plugin that drives an SSD1306 display. It receives the same JSON data as the dashboard!
+### 🚀 Current Features (v0.7.0)
+- **Hub/Spoke Clustering**: RevPi Hub aggregates data from Pi 4 Spoke nodes
+- **Generic Dashboard**: Accepts JSON data - add new sensors without touching Rust code
+- **Real-time Sensor Polling**: DHT22, BME680, Pi System Stats
+- **LED Status Indicators**: WS2812B strip controlled by Python plugins
+- **Buzzer Alerts**: Web-triggered via `/api/buzzer`
+- **OLED Display**: SSD1306 via generic I2C interface
 
 ## 🏗️ System Architecture
 
 ```mermaid
 graph TD
-    subgraph Pi ["Raspberry Pi Device"]
-        DHT22["DHT22 Sensor"]
-        BME680["BME680 Sensor"]
-        OLED["SSD1306 OLED"]
-        I2C_Bus["I2C Bus 1"]
-    end
-
-    subgraph Host ["Rust Host (Operating System)"]
-        Runtime["WasmRuntime"]
-        HAL["Generic HAL"]
-        Runtime -->|"Broadcasts JSON"| Plugins
-    end
-
-    subgraph UserSpace ["WASM Sandbox"]
-        BME680_Driver["BME680 Driver (Python)"]
-        OLED_App["OLED App (Python)"]
-        Dashboard["Dashboard (Python)"]
+    subgraph Hub["RevPi Hub (192.168.40.9)"]
+        HubHost["wasi-host (Hub Mode)"]
+        Dashboard["Dashboard Plugin"]
+        HubMonitor["Pi-Monitor Plugin"]
+        WebServer["Axum Web Server :3000"]
         
-        BME680_Driver -->|"i2c.transfer"| HAL
-        OLED_App -->|"i2c.transfer"| HAL
+        HubHost --> Dashboard
+        HubHost --> HubMonitor
+        HubHost --> WebServer
     end
 
-    HAL -->|"rppal i2c"| I2C_Bus
-    I2C_Bus --> BME680
-    I2C_Bus --> OLED
+    subgraph Spoke["Pi 4 Spoke (192.168.40.4)"]
+        SpokeHost["wasi-host (Spoke Mode)"]
+        DHT22["DHT22 Plugin"]
+        BME680["BME680 Plugin"]
+        SpokeMonitor["Pi-Monitor Plugin"]
+        
+        SpokeHost --> DHT22
+        SpokeHost --> BME680
+        SpokeHost --> SpokeMonitor
+    end
+
+    subgraph Hardware["Physical Sensors"]
+        DHT22Sensor["DHT22 Sensor"]
+        BME680Sensor["BME680 Sensor"]
+        LEDs["WS2812B LEDs"]
+        Buzzer["Piezo Buzzer"]
+    end
+
+    SpokeHost -->|"POST /push (JSON)"| WebServer
+    WebServer -->|"Aggregated State"| Dashboard
+    
+    DHT22 --> DHT22Sensor
+    BME680 --> BME680Sensor
+    SpokeMonitor --> LEDs
 ```
 
-### 1. The "Driver" (BME680 Plugin)
-Does NOT rely on Host logic. It implements the driver in Python using raw bytes:
-```python
-# BME680 Plugin (Python)
-# The host just passes bytes. It doesn't know it's a BME680!
-i2c.transfer(0x77, "FA", 3)  # Read raw temp/pressure data
-```
+### Data Flow
 
-### 2. The "Broadcast" (Data Flow)
-The Host collects readings from all sensors (Drivers), wraps them in JSON, and sends them to UI plugins:
-```json
-{
-  "dht22": { "temp": 22.5, "humidity": 45.0 },
-  "bme680": { "temp": 22.8, "iaq": 50 }
-}
-```
+1. **Spoke** polls sensors every 5 seconds via WASM plugins
+2. **Spoke** sends readings to **Hub** via `POST /push` endpoint
+3. **Hub** merges Spoke data with its own readings
+4. **Dashboard** renders aggregated data from all nodes
+5. **Browser** sees real-time data from the entire cluster
 
-### 3. The "App" (OLED & Dashboard)
-Plugins receive this JSON and render it. You can change the layout, add graphs, or change the OLED font **just by editing Python**.
+## 📁 Project Structure
+
+```
+wasi-python-host/
+├── host/src/
+│   ├── main.rs       # axum web server, polling loop, hub/spoke logic
+│   ├── runtime.rs    # wasm component loading, capability implementations
+│   ├── config.rs     # toml configuration loader
+│   ├── gpio.rs       # hardware abstraction (i2c, leds, buzzer)
+│   └── domain.rs     # shared types (AppState, SensorReading)
+├── plugins/
+│   ├── dht22/        # temperature/humidity sensor driver
+│   ├── bme680/       # environmental sensor with IAQ
+│   ├── pi-monitor/   # cpu/ram/uptime monitoring
+│   ├── dashboard/    # html dashboard renderer
+│   └── oled/         # ssd1306 display driver
+├── wit/
+│   └── plugin.wit    # wasm interface definitions (the "constitution")
+├── config/
+│   ├── hub.toml      # configuration for hub nodes
+│   └── spoke.toml    # configuration for spoke nodes
+└── scripts/
+    ├── build-plugins.sh    # compile python to wasm
+    └── install-service.sh  # systemd service installer
+```
 
 ## 🔌 Hardware Requirements
 
-1.  **Raspberry Pi** (3, 4, 5, or Zero 2W)
-2.  **DHT22 Sensor** (GPIO 4)
-3.  **BME680 Sensor** (I2C 0x77)
-4.  **SSD1306 OLED Display** (I2C 0x3C) *New!*
+### Hub (RevPi Connect 4)
+- No sensors required (aggregates data from spokes)
+- Runs dashboard web server
+- Monitors its own CPU/RAM stats
 
-**Wiring (I2C):**
-- SDA → GPIO 2 (Pin 3)
-- SCL → GPIO 3 (Pin 5)
-- VCC → 3.3V
-- GND → GND
+### Spoke (Raspberry Pi 4)
+- **DHT22 Sensor** (GPIO 4)
+- **BME680 Sensor** (I2C 0x77)
+- **WS2812B LED Strip** (GPIO 18) - 11 LEDs
+- **Piezo Buzzer** (GPIO 17 via relay)
+
+## 🚀 Deployment
+
+### Quick Start (Spoke Node)
+
+```bash
+# 1. Clone and build plugins
+git clone <repo>
+cd wasi-python-host
+./scripts/build-plugins.sh
+
+# 2. Build the Rust host
+cd host
+cargo build --release
+
+# 3. Copy spoke config
+cp ../config/spoke.toml ../config/host.toml
+# Edit host.toml to set your hub_url
+
+# 4. Install as systemd service
+cd ..
+sudo ./scripts/install-service.sh
+
+# 5. View dashboard on Hub
+# http://192.168.40.9:3000
+```
+
+### Configuration
+
+**Spoke (`config/spoke.toml`)**:
+```toml
+[cluster]
+role = "spoke"
+hub_url = "http://192.168.40.9:3000/push"
+node_id = "pi4-node-1"
+
+[plugins.dashboard]
+enabled = false  # Spokes don't need dashboard
+```
+
+**Hub (`config/hub.toml`)**:
+```toml
+[cluster]
+role = "hub"
+hub_url = ""
+node_id = "revpi-hub"
+
+[plugins.dht22]
+enabled = false  # Hub has no sensors (aggregator only)
+```
 
 ## 💡 Why This Architecture Matters
 
@@ -91,28 +169,17 @@ Plugins receive this JSON and render it. You can change the layout, add graphs, 
 A malicious or buggy plugin cannot crash the Host. It runs in a strict WASM sandbox with no network/file access unless explicitly granted.
 
 **2. Resilience**
-If the OLED plugin crashes, the Dashboard keeps running. If the BME680 driver errors, the Rust Host catches it and logs it.
+If one plugin crashes, others keep running. The Rust Host catches errors and logs them.
 
 **3. "Drop & Run" Extensibility**
-Want to add a light sensor (BH1750)?
-1. Write `bh1750.py` (Driver)
-2. Drop `bh1750.wasm` into `plugins/`
-3. Add to `host.toml`
-4. **Done.** No Rust recompilation needed.
+Add new sensors by writing Python + dropping `.wasm` files. No Rust recompilation.
 
-## Quick Start (On Raspberry Pi)
+**4. Distributed Monitoring**
+Hub/Spoke architecture allows monitoring multiple locations from a single dashboard.
 
-```bash
-# 1. Build Plugins
-./scripts/build-plugins.sh
+## 📚 Documentation
 
-# 2. Build Host
-cd host
-cargo run --release
-
-# 3. View Dashboard
-# http://raspberry-pi:3000
-```
+- [Architecture Guide](docs/generic_hal_architecture.md) - Complete system architecture, Hub/Spoke, and roadmap
 
 ## License
 
