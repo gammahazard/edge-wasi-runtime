@@ -195,13 +195,34 @@ allow_gpio = []     # ❌ Blocked
 ```
 
 ### Phase 6: Raft Consensus ⏳
-The current Hub/Spoke uses simple HTTP push. Future plans include **Raft Consensus** for leader election and log replication.
+The current Hub/Spoke uses simple HTTP push. Future plans include **Raft Consensus** for leader election and log replication among the sensor nodes.
 
 **Planned Topology (4 Nodes):**
-- **Voters (3 Nodes)**: RevPi Hub, Pi 4, Pi Zero A
-- **Learner (1 Node)**: Pi Zero B (accepts log entries but doesn't vote)
 
-This avoids "Split Brain" (2 vs 2 votes) while keeping all 4 nodes operational.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    RAFT CLUSTER (3 Voters)                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │   Pi 4       │◄─►│ Pi Zero 2W A │◄─►│ Pi Zero 2W B │       │
+│  │  (Leader)    │  │   (Voter)    │  │   (Voter)    │       │
+│  │  Sensors     │  │   Sensors    │  │   Sensors    │       │
+│  └──────┬───────┘  └──────────────┘  └──────────────┘       │
+│         │                                                    │
+└─────────┼────────────────────────────────────────────────────┘
+          │ HTTP GET (replicated log)
+          ▼
+┌──────────────────┐
+│   RevPi Hub      │  ← External Aggregator (NOT in Raft)
+│   Dashboard      │
+│   Port 3000      │
+└──────────────────┘
+```
+
+**Why this design:**
+- **3 voters = odd number** - No split-brain risk
+- **RevPi stays simple** - Industrial device doesn't run consensus code
+- **Pi 4 is natural leader** - Most powerful node in the cluster
+- **Clean separation** - Raft handles distributed sensor collection, RevPi just reads and displays
 
 ### Phase 7: Dynamic Plugin Discovery ⏳
 - Watch `plugins/` folder for new `.wasm` files
