@@ -19,10 +19,9 @@ class BME680Driver:
     
     def _i2c_read(self, reg: int, length: int) -> bytes:
         """Read bytes from register"""
-        result = i2c.transfer(self.addr, bytes([reg]).hex(), length)
-        if isinstance(result, str):
-            return bytes.fromhex(result)
-        return bytes.fromhex(result[0]) if result[0] else b''
+        # componentize-py unwraps Result<T,E> - returns T on Ok, raises on Err
+        hex_str = i2c.transfer(self.addr, bytes([reg]).hex(), length)
+        return bytes.fromhex(hex_str) if hex_str else b''
     
     def _i2c_write(self, reg: int, value: int):
         """Write single byte to register"""
