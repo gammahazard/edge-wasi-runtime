@@ -1,99 +1,140 @@
 """
 ==============================================================================
-dht22_plugin.py - DHT22 Temperature/Humidity Sensor Plugin
+app.py - DHT22 temperature/humidity sensor plugin
 ==============================================================================
 
-DHT22 is a GPIO sensor measuring:
-- Temperature (°C) 
-- Humidity (%)
+purpose:
+    this module implements the dht22-logic interface defined in plugin.wit.
+    it reads from the DHT22 sensor and controls LED 1 for room temperature.
 
-This plugin handles:
-1. Reading sensor data via gpio_provider.read_dht22(pin)
-2. LED feedback based on temperature thresholds (LED 1)
-3. Buzzer alarm for critical temperatures
-4. Hysteresis to prevent flicker
+the ALERT LOGIC in this file is HOT-SWAPPABLE:
+    - change temperature thresholds
+    - change LED colors
+    - change buzzer patterns
+    - rebuild wasm, host auto-reloads without restart
 
-Build:
+relations:
+    - implements: ../../wit/plugin.wit (dht22-logic)
+    - imports: gpio-provider, led-controller, buzzer-controller (from rust host)
+    - loaded by: ../../host/src/runtime.rs
+    - called by: ../../host/src/main.rs (polling loop)
+
+build command:
     componentize-py -d ../../wit -w dht22-plugin componentize app -o dht22.wasm
+
+==============================================================================
 """
 
 from wit_world.exports import Dht22Logic
 from wit_world.exports.dht22_logic import Dht22Reading
 from wit_world.imports import gpio_provider, led_controller, buzzer_controller
 
-# Thresholds
-COLD_ALARM = 15.0
-LOW_TEMP = 20.0
-HIGH_ALARM = 30.0
-CRITICAL_ALARM = 35.0
-DEADBAND = 2.0  # Hysteresis
 
-# State
+# ==============================================================================
+# alert thresholds - EDIT THESE AND HOT-RELOAD!
+# ==============================================================================
+HIGH_ALARM = 30.0
+LOW_ALARM = 15.0
+DEADBAND = 2.0  # hysteresis band (prevents flickering)
+
+# Humidity thresholds
+HIGH_HUMIDITY_ALARM = 70.0  # Too humid
+LOW_HUMIDITY_ALARM = 25.0   # Too dry
+HUMIDITY_DEADBAND = 5.0
+
+# State variables (persist between polls)
 high_alarm_active = False
 low_alarm_active = False
+high_humidity_active = False
+low_humidity_active = False
+
 
 class Dht22Logic(Dht22Logic):
+    """
+    Implementation of the dht22-logic interface from plugin.wit.
+    Controls LED 1 for room temperature status.
+    """
+    
     def poll(self) -> list[Dht22Reading]:
-        global high_alarm_active, low_alarm_active
+        """
+        Poll the DHT22 sensor, update LED 1, and trigger alerts.
+        """
+        global high_alarm_active, low_alarm_active, high_humidity_active, low_humidity_active
+        
+        timestamp_ms = gpio_provider.get_timestamp_ms()
         readings = []
         
         try:
-            # Read from HAL using gpio_provider
-            result = gpio_provider.read_dht22(4)  # BCM GPIO4
+            result = gpio_provider.read_dht22(4)  # BCM GPIO4 = physical pin 7
             
             if isinstance(result, tuple):
-                temp, humidity = result
-                timestamp = gpio_provider.get_timestamp_ms()
+                temperature, humidity = result
                 
-                # High alarm with hysteresis
+                # -------- High Temperature Alarm Logic (Hysteresis) --------
                 if not high_alarm_active:
-                    if temp >= HIGH_ALARM:
+                    if temperature >= HIGH_ALARM:
                         high_alarm_active = True
                 else:
-                    if temp <= (HIGH_ALARM - DEADBAND):
+                    if temperature <= (HIGH_ALARM - DEADBAND):
                         high_alarm_active = False
-                
-                # Low alarm with hysteresis
+
+                # -------- Low Temperature Alarm Logic --------
                 if not low_alarm_active:
-                    if temp <= LOW_TEMP:
+                    if temperature <= LOW_ALARM:
                         low_alarm_active = True
                 else:
-                    if temp >= (LOW_TEMP + DEADBAND):
+                    if temperature >= (LOW_ALARM + DEADBAND):
                         low_alarm_active = False
                 
-                # LED Color Logic (LED 1 = Room Temp)
-                if temp >= CRITICAL_ALARM:
-                    led_controller.set_led(1, 255, 0, 0)      # Bright Red
-                    buzzer_controller.beep(3, 200, 100)
-                    status = "CRITICAL"
-                elif high_alarm_active:
-                    led_controller.set_led(1, 255, 80, 0)     # Orange
-                    buzzer_controller.buzz(50)
-                    status = "HOT"
-                elif temp >= 25.0:
-                    led_controller.set_led(1, 255, 120, 0)    # Warm Orange
-                    status = "WARM"
+                # -------- Control LED 1 (Room Temp) --------
+                if high_alarm_active:
+                    led_controller.set_led(1, 255, 0, 0)  # Red
+                    buzzer_controller.beep(3, 100, 100)  # 3 beeps - much more noticeable!
+                    print(f"🔴 [DHT22] DANGER: {temperature:.1f}°C > {HIGH_ALARM}°C")
                 elif low_alarm_active:
-                    led_controller.set_led(1, 0, 100, 255)    # Blue
-                    status = "COLD"
-                elif temp >= LOW_TEMP:
-                    led_controller.set_led(1, 0, 255, 0)      # Green
-                    status = "NORMAL"
+                    led_controller.set_led(1, 0, 0, 255)  # Blue
+                    print(f"🔵 [DHT22] COLD: {temperature:.1f}°C < {LOW_ALARM}°C")
+                elif temperature > 25.0:
+                    led_controller.set_led(1, 255, 120, 0)  # Orange (warm)
+                    print(f"🟠 [DHT22] Warm: {temperature:.1f}°C")
                 else:
-                    led_controller.set_led(1, 0, 50, 255)     # Deep Blue
-                    status = "FREEZING"
+                    led_controller.set_led(1, 0, 255, 0)  # Green (normal)
+                    print(f"🟢 [DHT22] OK: {temperature:.1f}°C")
                 
-                print(f"🌡️ [DHT22] {temp:.1f}°C | {humidity:.0f}% | {status}")
+                # Push changes to hardware
+                led_controller.sync_leds()
                 
-                readings.append(Dht22Reading(
-                    sensor_id="dht22-gpio4",
-                    temperature=temp,
+                # -------- Humidity Alarm Logic --------
+                if not high_humidity_active:
+                    if humidity >= HIGH_HUMIDITY_ALARM:
+                        high_humidity_active = True
+                        buzzer_controller.beep(2, 200, 100)  # 2 long beeps for humidity
+                        print(f"💧 [DHT22] HIGH HUMIDITY: {humidity:.1f}% > {HIGH_HUMIDITY_ALARM}%")
+                else:
+                    if humidity <= (HIGH_HUMIDITY_ALARM - HUMIDITY_DEADBAND):
+                        high_humidity_active = False
+                
+                if not low_humidity_active:
+                    if humidity <= LOW_HUMIDITY_ALARM:
+                        low_humidity_active = True
+                        buzzer_controller.beep(1, 300, 0)  # 1 long beep for dry
+                        print(f"🏜️ [DHT22] LOW HUMIDITY: {humidity:.1f}% < {LOW_HUMIDITY_ALARM}%")
+                else:
+                    if humidity >= (LOW_HUMIDITY_ALARM + HUMIDITY_DEADBAND):
+                        low_humidity_active = False
+
+                # Create reading record
+                reading = Dht22Reading(
+                    sensor_id="dht22-gpio-4",
+                    temperature=temperature,
                     humidity=humidity,
-                    timestamp_ms=timestamp
-                ))
+                    timestamp_ms=timestamp_ms
+                )
+                readings.append(reading)
             else:
                 print(f"⚠️ DHT22 read error: {result}")
+                
         except Exception as e:
-            print(f"❌ DHT22 poll error: {e}")
-        
+            print(f"Error reading DHT22: {e}")
+            
         return readings

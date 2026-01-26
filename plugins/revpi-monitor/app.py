@@ -1,23 +1,11 @@
 """
 ==============================================================================
-revpi_monitor.py - RevPi Hub System Monitor
+revpi_monitor.py - Specialized monitoring for RevPi Hub
 ==============================================================================
-
-Monitors RevPi Connect 4 (Hub) system health:
-- CPU Temperature (industrial rated, higher threshold)
-- RAM Usage
-- Uptime
-
-The Hub has higher thermal tolerance (85°C) and doesn't beep as much.
-
-Build:
-    componentize-py -d ../../wit -w pi-monitor-plugin componentize app -o revpi-monitor.wasm
 """
-
 from wit_world.exports import PiMonitorLogic
 from wit_world.exports.pi_monitor_logic import PiStats
-from wit_world.imports import gpio_provider, led_controller, system_info
-
+from wit_world.imports import gpio_provider, led_controller, system_info, buzzer_controller
 
 class PiMonitorLogic(PiMonitorLogic):
     def poll(self) -> PiStats:
@@ -26,17 +14,11 @@ class PiMonitorLogic(PiMonitorLogic):
         used_mb, total_mb = system_info.get_memory_usage()
         uptime = system_info.get_uptime()
         
-        # RevPi: Higher thermal tolerance, use LED 0 for hub status
-        # No buzzer here to avoid annoying operator
+        # RevPi Specific: Higher thermal headroom (85C), use LED 0 for Hub Status
         if cpu_temp > 85.0:
-            led_controller.set_led(0, 255, 0, 100)  # Purple - Alert
-            print(f"🟣 [HUB] HOT: {cpu_temp:.1f}°C")
-        elif cpu_temp > 70.0:
-            led_controller.set_led(0, 255, 200, 0)  # Yellow - Warm
-            print(f"🟡 [HUB] Warm: {cpu_temp:.1f}°C")
-        else:
-            led_controller.set_led(0, 0, 255, 0)  # Green - OK
-            print(f"🟢 [HUB] OK: {cpu_temp:.1f}°C | RAM: {used_mb}/{total_mb}MB | Up: {uptime//3600}h")
+            led_controller.set_led(0, 255, 0, 100) # Purple Alert
+        
+        # Note: Hub doesn't beep as often as spokes to avoid annoying the operator
         
         return PiStats(
             cpu_temp=cpu_temp,

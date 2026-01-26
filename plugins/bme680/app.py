@@ -1,42 +1,62 @@
 """
 ==============================================================================
-bme680_plugin.py - BME680 Environmental Sensor Plugin
+bme680_plugin.py - BME680 environmental sensor logic
 ==============================================================================
 
-BME680 is an I2C sensor measuring:
-- Temperature (°C)
-- Humidity (%)
-- Pressure (hPa)  
-- Gas Resistance (KΩ) -> used for IAQ calculation
+purpose:
+    this module implements the bme680-logic interface defined in plugin.wit.
+    it polls the BME680 sensor via the host capability.
+    calculates Indoor Air Quality (IAQ) score using gas resistance.
+    manages LED 2 for air quality status.
 
-This plugin handles:
-1. Reading raw sensor data via generic I2C HAL
-2. Calibrating gas baseline (3 minute warmup)
-3. Calculating Indoor Air Quality (IAQ) score
-4. LED feedback based on air quality
+design:
+    - Stateful: Keeps track of "Gas Baseline" (cleanest air seen) to auto-calibrate.
+    - Adaptive: Drifts baseline slowly to account for sensor aging/ambient shifts.
+    - Hysteresis: Prevents buzzer from flapping on/off at thresholds.
 
-Build:
+relationships:
+    - implements: ../../../wit/plugin.wit (bme680-logic interface)
+    - imports: gpio-provider, led-controller, buzzer-controller
+    - loaded by: host/src/runtime.rs
+    - called by: host/src/main.rs (polling loop)
+    
+build command:
     componentize-py -d ../../wit -w bme680-plugin componentize app -o bme680.wasm
 """
 
+# ==============================================================================
+# wit-generated imports
+# ==============================================================================
+# ==============================================================================
+# wit-generated imports
+# ==============================================================================
 import os
+import wit_world
+from wit_world.imports import gpio_provider, led_controller, buzzer_controller, i2c
 from wit_world.exports import Bme680Logic
-from wit_world.imports import i2c, gpio_provider, led_controller, buzzer_controller
+from wit_world.exports.bme680_logic import Bme680Reading
 
 # ==============================================================================
-# BME680 Raw I2C Driver (No external library needed!)
+# BME680 Driver Logic (Moved from Host to Guest)
 # ==============================================================================
 class BME680Driver:
+    """
+    Direct I2C driver for the BME680 sensor.
+    Handles registers, calibration co-efficients, and compensation math.
+    """
     def __init__(self, addr=0x77):
         self.addr = addr
         self.cal = {}
         self._initialized = False
-        self.passive = False
-    
+        self.passive = os.getenv("HARVESTER_PASSIVE") == "1"
+
     def _read_reg(self, reg, length):
-        result = i2c.transfer(self.addr, bytes([reg]).hex(), length)
-        if result:
-            return bytes.fromhex(result)
+        # Convert register to hex string
+        reg_hex = bytes([reg]).hex()
+        # Call host generic I2C
+        res_hex = i2c.transfer(self.addr, reg_hex, length)
+        if isinstance(res_hex, str):
+            return bytes.fromhex(res_hex)
         return None
 
     def _write_reg(self, reg, value):
@@ -45,12 +65,6 @@ class BME680Driver:
 
     def init_sensor(self):
         if self._initialized: return True
-        
-        # Check passive mode here (not in __init__) because env var isn't
-        # available at module load time in WASM - only at first poll
-        passive_env = os.getenv("HARVESTER_PASSIVE")
-        self.passive = passive_env == "1"
-        
         try:
             # Check ID
             chip_id = self._read_reg(0xD0, 1)
@@ -59,13 +73,16 @@ class BME680Driver:
                 return False
             
             # Read Temperature Calibration (T1, T2, T3)
+            # T1: 0xE9 (LSB), 0xEA (MSB) -> uint16
             t1_data = self._read_reg(0xE9, 2)
             self.cal['t1'] = (t1_data[1] << 8) | t1_data[0]
             
+            # T2: 0x8A (LSB), 0x8B (MSB) -> int16
             t2_data = self._read_reg(0x8A, 2)
             t2 = (t2_data[1] << 8) | t2_data[0]
             self.cal['t2'] = t2 if t2 < 32768 else t2 - 65536
             
+            # T3: 0x8C -> int8
             t3_data = self._read_reg(0x8C, 1)
             t3 = t3_data[0]
             self.cal['t3'] = t3 if t3 < 128 else t3 - 256
@@ -78,44 +95,37 @@ class BME680Driver:
             return False
 
     def get_readings(self):
+        """
+        Performs a forced mode measurement and returns raw data.
+        BME680 requires the gas heater to be active for valid gas readings.
+        """
         if not self._initialized: 
             if not self.init_sensor(): return None
 
         try:
             if not self.passive:
-                # Gas heater configuration
-                self._write_reg(0x5A, 0x73)  # Heater resistance target
-                self._write_reg(0x64, 0x59)  # Heater duration (100ms)
+                # 1. Ensure Gas Heater is Configured (300°C target)
+                self._write_reg(0x5A, 0x79) 
+                self._write_reg(0x64, 0x14) # 40ms wait
                 
-                # Enable gas measurement + heater profile 0
-                self._write_reg(0x71, 0x10)  # run_gas = 1, nb_conv = 0
-                
-                # Set oversampling: temp x2, pressure x16, humidity x1
-                self._write_reg(0x72, 0x01)  # osrs_h = 1
-                self._write_reg(0x74, 0x54)  # osrs_t = 2, osrs_p = 5
-                
-                # Trigger forced mode
-                ctrl_meas = self._read_reg(0x74, 1)[0]
-                self._write_reg(0x74, (ctrl_meas & 0xFC) | 0x01)
-                
-                # Wait for measurement
-                import time
-                time.sleep(0.2)
+                # 2. Trigger measurement (Forced Mode)
+                self._write_reg(0x74, 0b01001001) 
             
-            # Read all data registers
-            data = self._read_reg(0x1D, 15)
-            if not data:
-                return None
+            # 3. Read Status and Data (0x1D to 0x2C)
+            # We read 16 bytes to cover status, temp, press, hum, and gas
+            data = self._read_reg(0x1D, 16)
+            if not data: return None
             
-            # Check measurement status
-            new_data = (data[0] & 0x80) != 0
-            gas_valid = (data[14] & 0x20) != 0
-            heater_stab = (data[14] & 0x10) != 0
+            # 4. Filter Gas validity
+            # Note: status is index 0. Gas msb is index 13 (0x2A), lsb is index 14 (0x2B)
+            gas_status = data[14]
+            gas_valid = (gas_status & 0x20) != 0
             
-            # Temperature (Registers 0x22-0x24)
+            # --- PRECISION TEMPERATURE MATH ---
+            # Temperature (Registers 0x22-0x24) -> Index 5,6,7
             raw_temp = ((data[5] << 12) | (data[6] << 4) | (data[7] >> 4))
             
-            # Bosch Compensation Formula
+            # Bosch Compensation Formula (Float version)
             var1 = (raw_temp / 16384.0) - (self.cal['t1'] / 1024.0)
             var1 = var1 * self.cal['t2']
             var2 = (raw_temp / 131072.0) - (self.cal['t1'] / 8192.0)
@@ -123,35 +133,20 @@ class BME680Driver:
             t_fine = var1 + var2
             temp = t_fine / 5120.0
             
-            # Humidity
+            # Humidity (Registers 0x25-0x26) -> Index 8,9
             raw_hum = (data[8] << 8) | data[9]
             hum = raw_hum / 1000.0
             
-            # Pressure
+            # Pressure (Registers 0x1F-0x21) -> Index 2,3,4
             raw_pres = (data[2] << 12) | (data[3] << 4) | (data[4] >> 4)
             pres = raw_pres / 100.0
             
-            if gas_valid and heater_stab:
-                # Gas Resistance
-                raw_gas = (data[13] << 2) | ((data[14] & 0xC0) >> 6)
-                gas_range = data[14] & 0x0F
-                
-                gas_range_table = [
-                    1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0,
-                    256.0, 512.0, 1024.0, 2048.0, 4096.0, 8192.0, 16384.0, 32768.0
-                ]
-                
-                if raw_gas > 0:
-                    gas_res_ohms = (1340.0 * 1000000.0) / (raw_gas * gas_range_table[gas_range])
-                    gas = gas_res_ohms / 1000.0  # KOhms
-                else:
-                    gas = 0.0
-                
-                if gas < 0:
-                    gas = 0.0
-                elif gas > 1000:
-                    gas = 1000.0
+            if gas_valid:
+                # Gas Resistance (Registers 0x2A-0x2B) -> Index 13, 14
+                raw_gas = (data[13] << 2) | (data[14] >> 6)
+                gas = float(raw_gas) * 2.5 
             else:
+                # Still warming up or bus clash
                 gas = 0.0
             
             return (temp, hum, pres, gas)
@@ -162,20 +157,36 @@ class BME680Driver:
 driver = BME680Driver(0x77)
 
 # ==============================================================================
-# IAQ State
+# IAQ State (Persisted via Stateful Runtime)
 # ==============================================================================
-gas_baseline = 0.0
-burn_in_count = 0
-gas_history = []
-bad_iaq_alarm_active = False
+gas_baseline = 0.0      # Tracks cleanest air seen (in KOhms)
+burn_in_count = 0       # Calibration counter (12 polls = 60 seconds)
+gas_history = []        # Rolling history for smoothing
+bad_iaq_alarm_active = False  # Hysteresis for IAQ buzzer
 
 class Bme680Logic(Bme680Logic):
-    def poll(self) -> list:
+    def poll(self) -> list[Bme680Reading]:
+        """
+        Read BME680 sensor and calculate Indoor Air Quality (IAQ) score.
+        
+        IAQ Scale (Bosch BSEC-inspired):
+          0-50   = Excellent (Green)
+          51-100 = Good (Green)
+          101-150 = Moderate (Yellow/Orange)  
+          151-200 = Poor (Orange)
+          201-300 = Bad (Red)
+          301-500 = Hazardous (Red)
+        
+        Gas Resistance Meaning:
+          HIGH (100+ KOhm) = Clean air
+          LOW (1-50 KOhm) = Polluted air (VOCs present)
+        """
         global gas_baseline, burn_in_count, gas_history, bad_iaq_alarm_active
         readings = []
         
         try:
-            result = driver.get_readings()
+            # result = gpio_provider.read_bme680(0x77) # DEPRECATED specialized call
+            result = driver.get_readings() # NEW: Generic I2C driver logic
             
             if result:
                 temp, humidity, pressure, gas = result
@@ -183,109 +194,90 @@ class Bme680Logic(Bme680Logic):
                 
                 burn_in_count += 1
                 
-                # Track gas history for smoothing
+                # Track gas history for smoothing (last 5 readings)
                 gas_history.append(gas)
                 if len(gas_history) > 5:
                     gas_history.pop(0)
                 avg_gas = sum(gas_history) / len(gas_history)
                 
-                is_passive = driver.passive
+                # --- IMPROVED IAQ ALGORITHM ---
                 
-                # CALIBRATION PHASE (first 3 minutes = 36 polls at 5s interval) - SKIP IN PASSIVE MODE
-                if not is_passive and burn_in_count < 36:
+                # CALIBRATION PHASE (first 60 seconds)
+                if burn_in_count < 12:
+                    # During warm-up, track the baseline but don't calculate IAQ
                     if gas > gas_baseline:
                         gas_baseline = gas
                     
                     current_iaq = 0
                     iaq_accuracy = 0
-                    print(f"🟣 [CALIBRATING] Warming up... ({burn_in_count}/36) | Gas: {gas:.1f} KΩ | Baseline: {gas_baseline:.1f} KΩ")
+                    print(f"🟣 [CALIBRATING] Warming up... ({burn_in_count}/12) | Gas: {gas:.1f} KΩ | Baseline: {gas_baseline:.1f} KΩ")
                     led_controller.set_led(2, 255, 0, 255)  # Purple
-                elif is_passive:
-                    # PASSIVE MODE - just monitor, don't control sensor timing
-                    if gas > gas_baseline:
-                        gas_baseline = gas
+                else:
+                    # ACTIVE PHASE - Calculate IAQ
                     
+                    # 1. Slowly drift baseline toward current reading (adaptive)
+                    #    This handles environmental changes over time.
+                    if gas > gas_baseline:
+                        gas_baseline = gas  # New clean air peak
+                    else:
+                        # Decay baseline slowly (0.1% per reading) to adapt
+                        gas_baseline = gas_baseline * 0.999 + gas * 0.001
+                    
+                    # 2. Gas Score (0-75 points)
+                    #    Lower resistance = more pollution = higher score
                     if gas_baseline > 0:
+                        # Ratio of current to baseline (1.0 = baseline, <1.0 = degraded)
                         gas_ratio = gas / gas_baseline
+                        # Invert: 1.0 baseline = 0 score, 0.5 baseline = 37.5 score
                         gas_score = (1.0 - gas_ratio) * 75.0
-                        gas_score = max(0, min(75, gas_score))
+                        gas_score = max(0, min(75, gas_score))  # Clamp to 0-75
                     else:
                         gas_score = 0
                     
+                    # 3. Humidity Score (0-25 points)
+                    #    Ideal humidity is 40%. Deviation adds to score.
                     hum_offset = abs(humidity - 40.0)
                     hum_score = (hum_offset / 40.0) * 25.0
-                    hum_score = min(25, hum_score)
+                    hum_score = min(25, hum_score)  # Clamp to 0-25
                     
+                    # 4. Final IAQ (0-500)
                     current_iaq = (gas_score + hum_score) * 5.0
                     current_iaq = min(500, max(0, current_iaq))
                     iaq_accuracy = 1
                     
-                    print(f"🔘 [PASSIVE] {temp:.1f}°C | {humidity:.0f}% | Gas: {gas:.0f} KΩ | IAQ: {int(current_iaq)} (Monitoring only)")
-                else:
-                    # ACTIVE PHASE - Calculate IAQ with absolute thresholds
-                    if gas > gas_baseline:
-                        gas_baseline = gas
-                    else:
-                        gas_baseline = gas_baseline * 0.9995 + gas * 0.0005
-                    
-                    # Absolute Gas Thresholds
-                    if gas >= 100:
-                        gas_score = 0
-                    elif gas >= 50:
-                        gas_score = (100 - gas) * 0.5
-                    elif gas >= 20:
-                        gas_score = 25 + (50 - gas) * (25 / 30)
-                    elif gas >= 10:
-                        gas_score = 50 + (20 - gas) * 1.5
-                    else:
-                        gas_score = 65 + min(10, (10 - gas) * 3.5)
-                    
-                    gas_score = max(0, min(75, gas_score))
-                    
-                    # Humidity Score
-                    if 30 <= humidity <= 50:
-                        hum_score = 0
-                    elif humidity < 30:
-                        hum_score = (30 - humidity) * 0.5
-                    else:
-                        hum_score = (humidity - 50) * 0.5
-                    hum_score = min(25, hum_score)
-                    
-                    # Final IAQ
-                    current_iaq = (gas_score + hum_score) * 5.0
-                    current_iaq = min(500, max(0, current_iaq))
-                    iaq_accuracy = 1
-                    
-                    # Status and LED Color
+                    # LED Color based on IAQ
                     if current_iaq <= 50:
                         led_controller.set_led(2, 0, 255, 0)  # Green
                         status = "Excellent"
                     elif current_iaq <= 100:
-                        led_controller.set_led(2, 100, 255, 0)  # Light Green
+                        led_controller.set_led(2, 0, 200, 50)  # Green-ish
                         status = "Good"
                     elif current_iaq <= 150:
-                        led_controller.set_led(2, 255, 200, 0)  # Yellow
+                        led_controller.set_led(2, 255, 150, 0)  # Yellow
                         status = "Moderate"
                     elif current_iaq <= 200:
                         led_controller.set_led(2, 255, 100, 0)  # Orange
                         status = "Poor"
-                    elif current_iaq <= 300:
-                        led_controller.set_led(2, 255, 50, 0)   # Deep Orange
-                        status = "Unhealthy"
                     else:
                         led_controller.set_led(2, 255, 0, 0)  # Red
-                        status = "Hazardous"
+                        status = "Bad"
+                        # Trigger buzzer for bad air quality (with hysteresis)
                         if not bad_iaq_alarm_active:
-                            buzzer_controller.beep(2, 150, 150)
+                            buzzer_controller.beep(2, 150, 150)  # 2 beeps
                             bad_iaq_alarm_active = True
                     
-                    if current_iaq <= 250 and bad_iaq_alarm_active:
+                    # Reset alarm when IAQ improves
+                    if current_iaq <= 180 and bad_iaq_alarm_active:
                         bad_iaq_alarm_active = False
                     
-                    print(f"🌡️ [BME680] {temp:.1f}°C | {humidity:.0f}% | Gas: {gas:.0f} KΩ | IAQ: {int(current_iaq)} ({status})")
+                    # Debug output
+                    print(f"🔵 [BME680] {temp:.1f}°C | {humidity:.0f}% | Gas: {gas:.0f} KΩ (Base: {gas_baseline:.0f}) | IAQ: {int(current_iaq)} ({status})")
                 
-                from wit_world.exports.bme680_logic import Bme680Reading
-                readings.append(Bme680Reading(
+                # Push changes to hardware
+                led_controller.sync_leds()
+                
+                reading = Bme680Reading(
+                    sensor_id="bme680-i2c-0x77",
                     temperature=temp,
                     humidity=humidity,
                     pressure=pressure,
@@ -293,8 +285,16 @@ class Bme680Logic(Bme680Logic):
                     iaq_score=int(current_iaq),
                     iaq_accuracy=iaq_accuracy,
                     timestamp_ms=timestamp
-                ))
+                )
+                readings.append(reading)
+                    
+            else:
+                led_controller.set_led(2, 255, 0, 255)
+                print(f"⚠️ BME680 read error: {result}")
+                
         except Exception as e:
-            print(f"❌ BME680 poll error: {e}")
-        
+            led_controller.set_led(2, 255, 0, 255)
+            print(f"❌ BME680 Exception: {e}")
+            
         return readings
+
