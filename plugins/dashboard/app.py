@@ -1,424 +1,294 @@
 """
 ==============================================================================
-dashboard_plugin.py - python dashboard plugin for wasi host
+dashboard_plugin.py - Harvester OS Dashboard
 ==============================================================================
 
-purpose:
-    this module implements the dashboard-logic interface defined in
-    ../../../wit/plugin.wit. when compiled to wasm, the rust host calls
-    its render() function to generate html for the web dashboard.
+Multi-node sensor dashboard with:
+- Real-time sensor data (DHT22, BME680)
+- System health for Hub, Pi4 Spoke, PiZero nodes
+- Buzzer controls
+- Live log viewer
+- Dynamic JavaScript updates
 
-relationships:
-    - implements: ../../../wit/plugin.wit (dashboard-logic interface)
-    - loaded by: ../../../host/src/runtime.rs (WasmRuntime::render_dashboard)
-    - called by: ../../../host/src/main.rs (http dashboard handler)
-
-design rationale:
-    why render html in python wasm instead of rust?
-    
-    1. separation of concerns
-       - rust host: http, tls, routing (performance-critical)
-       - python guest: templating, styling (flexibility-critical)
-    
-    2. hot reload workflow
-       - edit this file
-       - rebuild: componentize-py -d ../../wit -w dashboard-plugin componentize dashboard_plugin -o dashboard.wasm
-       - refresh browser (host auto-reloads wasm files!)
-       - no rust recompilation needed
-    
-    3. polyglot flexibility
-       - could rewrite in rust later for smaller binary size (~1kb vs ~38mb)
-       - interface stays the same (wit contract)
-       - host code doesn't change at all
-
-industry parallels:
-    - shopify: liquid templates run sandboxed for merchant customization
-    - cloudflare workers: edge rendering with wasm isolation
-    - fermyon spin: http handlers in python wasm
-
-build command:
-    componentize-py -d ../../wit -w dashboard-plugin componentize dashboard_plugin -o dashboard.wasm
-
-==============================================================================
+Build:
+    componentize-py -d ../../wit -w dashboard-plugin componentize app -o dashboard.wasm
 """
 
-# ==============================================================================
-# wit-generated imports
-# ==============================================================================
-# componentize-py generates wit_world from plugin.wit
-# we inherit from DashboardLogic and implement render()
-
-import wit_world
 from wit_world.exports import DashboardLogic
+import json
 
 
 class DashboardLogic(DashboardLogic):
-    """
-    implementation of the dashboard-logic interface from plugin.wit.
-    
-    the rust host calls render(temperature, humidity) when a browser
-    requests the dashboard page. we return complete html.
-    
-    wit signature:
-        render: func(temperature: f32, humidity: f32) -> string
-    
-    python signature:
-        def render(self, temperature: float, humidity: float) -> str
-    """
-    
-    def render(self, temperature: float, humidity: float) -> str:
-        """
-        render a complete html dashboard page with the given sensor readings.
+    def render(self, sensor_data: str) -> str:
+        """Render the HTML dashboard with sensor data JSON."""
+        data = json.loads(sensor_data) if sensor_data else {}
         
-        args:
-            temperature: current temperature in celsius (f32 -> float)
-            humidity: current relative humidity percentage (f32 -> float)
-            
-        returns:
-            complete html document as a string
-            (including <!doctype html>)
-            
-        called by:
-            rust host's dashboard_handler in main.rs
-            
-        design notes:
-            - we return complete html, not fragments (simpler for demo)
-            - css is inline to avoid asset serving complexity
-            - auto-refresh via meta tag for live updates
-            - dark theme with modern styling for visual appeal
-        """
+        # Extract values with defaults
+        dht = data.get("dht22", {})
+        dht_temp = dht.get("temperature", 0.0)
+        dht_hum = dht.get("humidity", 0.0)
         
+        bme = data.get("bme680", {})
+        bme_temp = bme.get("temperature", 0.0)
+        bme_hum = bme.get("humidity", 0.0)
+        pressure = bme.get("pressure", 0.0)
+        gas = bme.get("gas_resistance", 0.0)
+        iaq = bme.get("iaq_score", 0)
         
-        # determine status styling based on values
-        # this shows python logic running in wasm
-        temp_class = "reading temp"
-        if temperature > 30.0:
-            temp_class += " danger"
-        elif temperature < 10.0:
-            temp_class += " cold"
+        # Hub (RevPi) Data
+        pi_hub = data.get("pi", {})
+        hub_cpu = pi_hub.get("cpu_temp", 0.0)
+        hub_ram_used = pi_hub.get("memory_used_mb", 0)
+        hub_ram_total = pi_hub.get("memory_total_mb", 0)
+        hub_uptime = pi_hub.get("uptime_seconds", 0)
         
-        humidity_class = "reading humidity"
-        if humidity > 80.0:
-            humidity_class += " danger"
-        elif humidity < 20.0:
-            humidity_class += " warning"
+        # Spoke Pi4 Data
+        pi4 = data.get("pi4", {})
+        pi4_cpu = pi4.get("cpu_temp", 0.0)
+        pi4_ram_used = pi4.get("memory_used_mb", 0)
+        pi4_ram_total = pi4.get("memory_total_mb", 0)
         
-        # build the complete html page
-        # using f-string for templating (simple and fast)
-        # NOTE: CSS brackets {} must be doubled {{}} to escape specific styles
-        html = f"""<!doctype html>
+        # PiZero Data
+        pizero = data.get("pizero", {})
+        pizero_cpu = pizero.get("cpu_temp", 0.0)
+        pizero_ram_used = pizero.get("memory_used_mb", 0)
+        pizero_ram_total = pizero.get("memory_total_mb", 0)
+        pizero_online = "cpu_temp" in pizero
+        
+        # IAQ Text
+        if iaq == 0:
+            iaq_text = "CALIB..."
+            iaq_class = "calib"
+        elif iaq <= 50:
+            iaq_text = "EXCELLENT"
+            iaq_class = "excellent"
+        elif iaq <= 100:
+            iaq_text = "GOOD"
+            iaq_class = "good"
+        elif iaq <= 150:
+            iaq_text = "MODERATE"
+            iaq_class = "moderate"
+        elif iaq <= 200:
+            iaq_text = "POOR"
+            iaq_class = "poor"
+        else:
+            iaq_text = "BAD"
+            iaq_class = "bad"
+        
+        # Uptime
+        up_h = hub_uptime // 3600
+        up_m = (hub_uptime % 3600) // 60
+        uptime_str = f"{up_h}h {up_m}m"
+        
+        return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>wasi python dashboard</title>
-    
-    <!-- inline css - complete design system -->
+    <title>HARVESTER OS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        /* ==== design tokens (TERMINAL/CRT THEME) ==== */
         :root {{
-            --bg-primary: #0a0a0a;  /* Deep black */
-            --bg-card: #111111;     /* Slightly lighter black */
-            --bg-hover: #1a1a1a;
-            --accent: #33ff33;      /* TERMINAL GREEN */
-            --text-primary: #33ff33;
-            --text-secondary: #22cc22;
-            --success: #33ff33;     /* GREEN */
-            --warning: #ffcc00;
-            --danger: #ff3333;
-            --cold: #66ccff;
-            --border-subtle: #1a3a1a;
-            --shadow: 0 0 10px rgba(51,255,51,0.1);
-            --shadow-hover: 0 0 20px rgba(51,255,51,0.3);
+            --bg: #0a0a0f;
+            --card: #12121a;
+            --border: #2a2a3a;
+            --green: #00ff88;
+            --red: #ff4444;
+            --yellow: #ffcc00;
+            --blue: #00aaff;
+            --purple: #aa66ff;
+            --dim: #666;
         }}
-        
-        /* ==== base reset ==== */
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
-            font-family: 'VT323', 'Courier New', monospace; /* TERMINAL FONT */
-            background: var(--bg-primary);
-            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--bg);
+            color: #eee;
             min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 2rem;
-            line-height: 1.5;
-            /* CRT scanline effect */
-            background-image: 
-                repeating-linear-gradient(
-                    0deg,
-                    rgba(0, 0, 0, 0.15),
-                    rgba(0, 0, 0, 0.15) 1px,
-                    transparent 1px,
-                    transparent 2px
-                );
+            padding: 20px;
         }}
-        
-        /* ==== header ==== */
         .header {{
             text-align: center;
-            margin-bottom: 3rem;
-            border: 2px solid var(--accent);
-            padding: 1rem;
-            background: rgba(0,0,0,0.5);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 15px;
+            margin-bottom: 20px;
         }}
-        
-        .header h1 {{
-            font-size: 2.5rem;
-            margin-bottom: 1rem;
-            color: var(--accent);
-            text-transform: uppercase;
-            letter-spacing: 0.2em;
-            text-shadow: 0 0 10px var(--accent); /* CRT GLOW */
-        }}
-        
-        .header p {{
-            color: var(--text-secondary);
-        }}
-        
-        /* ==== badges ==== */
-        .badge {{
-            display: inline-block;
-            background: rgba(255, 0, 255, 0.1);
-            padding: 4px 12px;
-            font-size: 0.75rem;
-            color: var(--success);
-            border: 1px solid var(--success);
-            margin: 0.25rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            box-shadow: 0 0 5px var(--success);
-        }}
-        
-        /* ==== sensor cards with POLISH ==== */
+        h1 {{ color: var(--green); font-size: 2rem; letter-spacing: 3px; }}
+        .subtitle {{ color: var(--dim); font-size: 0.9rem; margin-top: 5px; }}
         .grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 2rem;
-            max-width: 900px;
-            width: 100%;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 15px;
+            max-width: 1200px;
+            margin: 0 auto;
         }}
-        
         .card {{
-            background: var(--bg-card);
-            padding: 2.5rem;
-            border: 2px solid var(--accent);
-            border-radius: 0; /* Sharp corners */
-            box-shadow: var(--shadow);
-            transition: all 0.2s ease;
-            position: relative;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
         }}
-        
-        .card:hover {{
-            box-shadow: var(--shadow-hover);
-            background: var(--bg-hover);
-            border-color: var(--accent);
+        .card-title {{
+            color: var(--green);
+            font-size: 0.85rem;
+            border-bottom: 1px dashed var(--border);
+            padding-bottom: 8px;
+            margin-bottom: 10px;
         }}
-        
-        /* Scanline effect */
-        .card::before {{
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(transparent 50%, rgba(0,0,0,0.3) 50%);
-            background-size: 100% 4px;
-            pointer-events: none;
-            opacity: 0.3;
-        }}
-        
-        .card:hover {{
-            transform: translate(-4px, -4px);
-            box-shadow: 4px 4px 0 var(--success); /* Retro shadow */
-            background: var(--bg-hover);
-        }}
-        
-        .card-header {{
+        .card-title.warn {{ color: var(--yellow); }}
+        .card-title.danger {{ color: var(--red); }}
+        .value {{ font-size: 2.5rem; font-weight: 700; }}
+        .unit {{ font-size: 1rem; opacity: 0.6; }}
+        .metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; font-size: 0.8rem; }}
+        .metric span {{ opacity: 0.5; display: block; }}
+        .iaq {{ padding: 5px 10px; border-radius: 4px; display: inline-block; margin-top: 5px; }}
+        .iaq.excellent {{ background: var(--green); color: #000; }}
+        .iaq.good {{ background: #88ff88; color: #000; }}
+        .iaq.moderate {{ background: var(--yellow); color: #000; }}
+        .iaq.poor {{ background: #ff8800; color: #000; }}
+        .iaq.bad {{ background: var(--red); color: #fff; }}
+        .iaq.calib {{ background: var(--purple); color: #fff; }}
+        .controls {{
+            max-width: 1200px;
+            margin: 20px auto;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-            color: var(--success);
-            font-size: 1rem;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            font-weight: 400;
-            border-bottom: 1px solid var(--success);
-            padding-bottom: 0.5rem;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
         }}
-        
-        .card-icon {{
-            font-size: 1.5rem;
+        .btn {{
+            background: transparent;
+            color: var(--green);
+            border: 1px solid var(--green);
+            padding: 10px 20px;
+            font-family: inherit;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
         }}
-        
-        /* ==== readings ==== */
-        .reading {{
-            font-size: 3.5rem;
-            font-weight: 700;
-            text-shadow: 0 0 15px currentColor; /* GLOWING NUMBERS */
-            transition: opacity 0.15s ease-in-out; /* Smooth fade effect */
+        .btn:hover {{ background: var(--green); color: #000; }}
+        .logs {{
+            max-width: 1200px;
+            margin: 20px auto;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 300px;
+            overflow-y: auto;
         }}
-        
-        .unit {{
-            font-size: 1.5rem;
-            color: var(--text-secondary);
-            font-weight: 400;
-            text-shadow: none;
-        }}
-        
-        .temp {{ color: var(--accent); }}
-        .humidity {{ color: var(--success); }}
-        .cold {{ color: var(--cold); }}
-        .warning {{ color: var(--warning); }}
-        .danger {{ color: var(--danger); }}
-        
-        /* ==== footer ==== */
-        .footer {{
-            margin-top: 3rem;
-            text-align: center;
-            color: var(--text-secondary);
-            font-size: 0.8rem;
-        }}
-        
-        /* ==== footer architecture box (UPDATED) ==== */
-        .badge {{
-            display: inline-block;
-            padding: 0.5rem 1rem;
-            margin: 0 0.5rem;
-            background: var(--bg-card);
-            border: 1px solid var(--accent);
-            border-radius: 0; /* Sharp corners for terminal look */
-            font-size: 0.9rem;
-            color: var(--accent);
-            font-weight: 400;
-            text-transform: uppercase;
-        }}
-        .architecture {{
-            margin: 2rem auto;
-            max-width: 600px;
-            padding: 1.5rem;
-            background: rgba(0,0,0,0.5);
-            font-family: 'consolas', 'monaco', monospace;
-            font-size: 0.8rem;
-            color: var(--success);
-            border: 1px solid var(--success);
-            box-shadow: 0 0 10px rgba(0,255,255,0.1);
-            position: relative;
-        }}
-        
-        .architecture code {{
-            color: var(--accent);
-            font-weight: bold;
-        }}
-        
-        /* ==== responsive ==== */
-        @media (max-width: 600px) {{
-            body {{ padding: 1rem; }}
-            .header h1 {{ font-size: 1.75rem; }}
-            .reading {{ font-size: 2.5rem; }}
-        }}
+        .logs h3 {{ color: var(--green); margin-bottom: 10px; font-size: 0.9rem; }}
+        .log-line {{ font-size: 0.75rem; color: var(--dim); padding: 2px 0; }}
+        .tabs {{ display: flex; gap: 10px; margin-bottom: 10px; }}
+        .tab {{ cursor: pointer; padding: 5px 15px; border-radius: 4px; }}
+        .tab.active {{ background: var(--green); color: #000; }}
+        .tab:not(.active) {{ border: 1px solid var(--border); }}
+        .node-status {{ display: flex; align-items: center; gap: 8px; }}
+        .dot {{ width: 8px; height: 8px; border-radius: 50%; }}
+        .dot.online {{ background: var(--green); }}
+        .dot.offline {{ background: var(--red); }}
     </style>
 </head>
 <body>
-    <script>
-        // Live update system - fetch new data without page reload
-        let lastTemp = {temperature:.1f};
-        let lastHumidity = {humidity:.1f};
+    <div class="header">
+        <h1>▲ HARVESTER OS</h1>
+        <div class="subtitle">UPTIME: {uptime_str} | NODES: 3</div>
+    </div>
+    
+    <div class="grid">
+        <div class="card">
+            <div class="card-title">DHT22 [ROOM]</div>
+            <div class="value">{dht_temp:.1f}<span class="unit">°C</span></div>
+            <div class="metrics">
+                <div class="metric"><span>HUMIDITY</span>{dht_hum:.0f}%</div>
+            </div>
+        </div>
         
-        async function updateReadings() {{
+        <div class="card">
+            <div class="card-title">BME680 [AIR]</div>
+            <div class="value">{bme_temp:.1f}<span class="unit">°C</span></div>
+            <div class="metrics">
+                <div class="metric"><span>HUMIDITY</span>{bme_hum:.0f}%</div>
+                <div class="metric"><span>PRESSURE</span>{pressure:.0f}hPa</div>
+                <div class="metric"><span>GAS</span>{gas:.0f}KΩ</div>
+                <div class="metric"><span>IAQ</span><span class="iaq {iaq_class}">{iaq} {iaq_text}</span></div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-title {'warn' if hub_cpu > 60 else ''}">REVPI HUB</div>
+            <div class="value">{hub_cpu:.1f}<span class="unit">°C</span></div>
+            <div class="metrics">
+                <div class="metric"><span>RAM</span>{hub_ram_used}/{hub_ram_total}MB</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-title {'warn' if pi4_cpu > 60 else ''}">PI4 SPOKE</div>
+            <div class="value">{pi4_cpu:.1f}<span class="unit">°C</span></div>
+            <div class="metrics">
+                <div class="metric"><span>RAM</span>{pi4_ram_used}/{pi4_ram_total}MB</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-title">PIZERO <span class="node-status"><span class="dot {'online' if pizero_online else 'offline'}"></span>{'ONLINE' if pizero_online else 'OFFLINE'}</span></div>
+            <div class="value">{pizero_cpu:.1f}<span class="unit">°C</span></div>
+            <div class="metrics">
+                <div class="metric"><span>RAM</span>{pizero_ram_used}/{pizero_ram_total}MB</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="controls">
+        <button class="btn" onclick="buzzer('beep')">[ BEEP ]</button>
+        <button class="btn" onclick="buzzer('beep3')">[ BEEP x3 ]</button>
+        <button class="btn" onclick="buzzer('long')">[ LONG ]</button>
+    </div>
+    
+    <div class="logs" id="logs">
+        <div class="tabs">
+            <div class="tab active" onclick="switchLogs('hub')">HUB</div>
+            <div class="tab" onclick="switchLogs('pi4')">PI4</div>
+            <div class="tab" onclick="switchLogs('pizero')">PIZERO</div>
+        </div>
+        <div id="log-content"></div>
+    </div>
+    
+    <script>
+        let currentNode = 'hub';
+        const logUrls = {{
+            hub: '/api/logs',
+            pi4: 'http://192.168.7.11:3000/api/logs',
+            pizero: 'http://192.168.7.12:3000/api/logs'
+        }};
+        
+        async function buzzer(action) {{
+            await fetch('/api/buzzer?action=' + action, {{method: 'POST'}});
+        }}
+        
+        function switchLogs(node) {{
+            currentNode = node;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            fetchLogs();
+        }}
+        
+        async function fetchLogs() {{
             try {{
-                const response = await fetch('/api');
-                const data = await response.json();
-                
-                // Get current readings (first in array)
-                if (data.readings && data.readings.length > 0) {{
-                    const reading = data.readings[0];
-                    
-                    // Update temperature if changed
-                    if (reading.temperature !== lastTemp) {{
-                        const tempElement = document.querySelector('.temp');
-                        tempElement.style.opacity = '0.5';
-                        setTimeout(() => {{
-                            tempElement.childNodes[0].textContent = reading.temperature.toFixed(1);
-                            tempElement.style.opacity = '1';
-                        }}, 150);
-                        lastTemp = reading.temperature;
-                    }}
-                    
-                    // Update humidity if changed
-                    if (reading.humidity !== lastHumidity) {{
-                        const humidityElement = document.querySelector('.humidity');
-                        humidityElement.style.opacity = '0.5';
-                        setTimeout(() => {{
-                            humidityElement.childNodes[0].textContent = reading.humidity.toFixed(1);
-                            humidityElement.style.opacity = '1';
-                        }}, 150);
-                        lastHumidity = reading.humidity;
-                    }}
-                }}
-            }} catch (error) {{
-                console.error('Failed to fetch readings:', error);
+                const res = await fetch(logUrls[currentNode]);
+                const data = await res.json();
+                const html = (data.logs || []).map(l => '<div class="log-line">' + l + '</div>').join('');
+                document.getElementById('log-content').innerHTML = html || '<div class="log-line">No logs</div>';
+            }} catch(e) {{
+                document.getElementById('log-content').innerHTML = '<div class="log-line">Failed to fetch logs</div>';
             }}
         }}
         
-        // Poll every 2 seconds
-        setInterval(updateReadings, 2000);
+        fetchLogs();
+        setInterval(fetchLogs, 3000);
+        setInterval(() => location.reload(), 10000);
     </script>
-    <header class="header">
-        <h1>// SYSTEM_DASHBOARD</h1>
-        <p>
-            <span class="badge">host::rust</span>
-            <span class="badge">guest::python</span>
-            <span class="badge">wasi::v0.2</span>
-        </p>
-    </header>
-    
-    <main class="grid">
-        <article class="card">
-            <header class="card-header">
-                <span>>> TEMPERATURE</span>
-                <span class="card-icon">[T]</span>
-            </header>
-            <div class="{temp_class}">
-                {temperature:.1f}<span class="unit">&deg;C</span>
-            </div>
-        </article>
-        
-        <article class="card">
-            <header class="card-header">
-                <span>>> HUMIDITY</span>
-                <span class="card-icon">[H]</span>
-            </header>
-            <div class="{humidity_class}">
-                {humidity:.1f}<span class="unit">%</span>
-            </div>
-        </article>
-    </main>
-    
-    <footer class="footer">
-        <p>STATUS: <strong>ONLINE</strong> | RENDERER: <strong>PYTHON_WASM</strong></p>
-        <div class="architecture">
-            flow: browser -> rust_host -> <code>render()</code> -> python_wasm -> html
-        </div>
-    </footer>
 </body>
-</html>"""
-        
-        return html
-
-
-# ==============================================================================
-# optional: local testing without wasm
-# ==============================================================================
-# uncomment to test the html output locally:
-#
-# if __name__ == "__main__":
-#     dashboard = DashboardLogic()
-#     html = dashboard.render(22.5, 45.0)
-#     with open("test_output.html", "w") as f:
-#         f.write(html)
-#     print("wrote test_output.html")
+</html>'''

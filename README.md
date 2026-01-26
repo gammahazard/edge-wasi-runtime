@@ -1,4 +1,4 @@
-# WASI Python Host
+# HARVESTER OS
 
 ![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)
 ![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
@@ -6,307 +6,156 @@
 ![Raspberry Pi](https://img.shields.io/badge/-Raspberry_Pi-C51A4A?style=for-the-badge&logo=Raspberry-Pi)
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
 
-A reference implementation demonstrating **Python WASM modules** reading **real DHT22 sensor data** on a Raspberry Pi, using the **WASI Component Model** with a Rust host.
+A **multi-node edge computing platform** using WASI Component Model for secure, sandboxed Python plugins on Raspberry Pi hardware.
 
-## The Key Demonstration
-
-This project shows the **WASI capability model** in action:
+## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    Rust Host (Wasmtime)                       │
-│                                                              │
-│   ┌──────────────────────────────────────────────────────┐   │
-│   │  Host Capabilities (Rust Implements)                 │   │
-│   │  • gpio-provider:                                    │   │
-│   │      read_dht22(pin) → (temp, humidity)             │   │
-│   │      get_cpu_temp() → celsius                        │   │
-│   │      get_timestamp_ms() → unix timestamp             │   │
-│   │  • led-controller:                                   │   │
-│   │      set_led(index, r, g, b)                         │   │
-│   │      set_all(r, g, b)                                │   │
-│   │      set_two(led0_rgb, led1_rgb) ← atomic update    │   │
-│   │  • buzzer-controller:                                │   │
-│   │      buzz(duration_ms)                               │   │
-│   │      beep(count, duration_ms, interval_ms)          │   │
-│   └────────────────────────┬─────────────────────────────┘   │
-│                            │                                  │
-│   ┌────────────────────────┼─────────────────────────────┐   │
-│   │  Wasmtime Sandbox      │                             │   │
-│   │         ┌──────────────┴──────────────┐              │   │
-│   │         │ Python WASM Plugin          │              │   │
-│   │         │  • imports capabilities     │              │   │
-│   │         │  • contains ALERT LOGIC     │              │   │
-│   │         │  • hot-swappable!           │              │   │
-│   │         └─────────────────────────────┘              │   │
-│   └──────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────┘
-                            ↓
-    ┌───────────────┐  ┌───────────────┐  ┌───────────────┐
-    │  DHT22 Sensor │  │  LED Strip    │  │  Buzzer       │
-    │  (GPIO 4)     │  │  (GPIO 18)    │  │  (GPIO 17)    │
-    └───────────────┘  └───────────────┘  └───────────────┘
+                    ┌─────────────────────────────────────────┐
+                    │           HARVESTER OS                   │
+                    │         Web Dashboard (:3000)            │
+                    └────────────────┬────────────────────────┘
+                                     │
+         ┌───────────────────────────┼───────────────────────────┐
+         │                           │                           │
+   ┌─────┴─────┐              ┌──────┴──────┐            ┌──────┴──────┐
+   │  REVPI    │              │   PI4       │            │  PIZERO     │
+   │  HUB      │◄────────────►│  SPOKE 1    │◄──────────►│  SPOKE 2    │
+   │ 192.168.7.10            │ 192.168.7.11 │           │ 192.168.7.12 │
+   └─────┬─────┘              └──────┬──────┘            └──────┬──────┘
+         │                           │                           │
+   ┌─────┴─────┐              ┌──────┴──────┐            ┌──────┴──────┐
+   │ Plugins:  │              │ Plugins:    │            │ Native Svc  │
+   │ - dashboard             │ - dht22     │            │  (Python)   │
+   │ - revpi-monitor         │ - bme680    │            │             │
+   └───────────┘              │ - pi4-monitor           └─────────────┘
+                              │ - oled      │
+                              └─────────────┘
 ```
 
-**The sandboxed Python WASM plugin CANNOT directly access GPIO.**  
-It must call host capabilities which control access.  
-This is the "landlord/tenant" security model that makes WASI powerful.
+### Node Roles
 
-## 🎬 Showcase & Demo
+| Node | IP | Role | Sensors/Hardware |
+|------|-----|------|------------------|
+| RevPi Connect 4 | 192.168.7.10 | Hub | Dashboard, system monitoring |
+| Raspberry Pi 4 | 192.168.7.11 | Spoke | DHT22, BME680, WS2812B LEDs, Buzzer |
+| Raspberry Pi Zero 2W | 192.168.7.12 | Spoke | Lightweight native service |
 
-This project demonstrates **Secure Hot-Swapping** on embedded hardware.
+## Plugins
 
-### 🏗️ System Architecture (Mermaid)
-The following diagram illustrates how the Rust Host securely manages the Python plugins and hardware access:
+All plugins use the **Generic HAL Architecture** - Python WASM code that runs identically across nodes.
 
-```mermaid
-graph TD
-    subgraph Pi [Raspberry Pi Device]
-        DHT22[DHT22 Sensor]
-        GPIO[GPIO Pins]
-    end
+| Plugin | WIT World | Description |
+|--------|-----------|-------------|
+| `dht22` | dht22-plugin | Temperature/humidity via `gpio_provider.read_dht22()` |
+| `bme680` | bme680-plugin | Environmental sensor via raw `i2c.transfer()` |
+| `dashboard` | dashboard-plugin | Multi-node web UI with log viewer |
+| `pi4-monitor` | pi4-monitor-plugin | Pi 4 system health (CPU, RAM, uptime) |
+| `revpi-monitor` | revpi-monitor-plugin | RevPi Hub monitoring |
+| `pizero-monitor` | - | Lightweight Pi Zero monitoring |
+| `oled` | oled-plugin | SSD1306 display driver |
 
-    subgraph Host [Rust Host Process]
-        Runtime[WasmRuntime]
-        Linker[Wasmtime Linker]
-        
-        subgraph Caps [Host Capabilities]
-            GPIO_Mod[GPIO Module]
-            HTTP_Mod[HTTP Server]
-        end
-    end
+## Key Features
 
-    subgraph Guest [WASM Sandbox]
-        subgraph Python1 [Sensor Plugin]
-            SensorApp[app.py]
-        end
-        
-        subgraph Python2 [Dashboard Plugin]
-            DashboardApp[app.py]
-        end
-    end
+### 1. Secure Sandboxing
+Python plugins run in WASM sandboxes. They **cannot** access files, network, or hardware unless explicitly granted via WIT interfaces.
 
-    HTTP_Mod -->|Request| Runtime
-    Runtime -->|render calls| DashboardApp
-    DashboardApp -->|HTML| HTTP_Mod
-    
-    Runtime -->|poll calls| SensorApp
-    SensorApp -->|read_dht22| Linker
-    Linker -->|Secure Call| GPIO_Mod
-    GPIO_Mod -->|Subprocess| GPIO
-    GPIO -->|Signal| DHT22
+### 2. Generic HAL (Hardware Abstraction Layer)
+BME680 uses raw I2C transfers (`i2c.transfer()`), not sensor-specific host functions. This means:
+- **Compile Once, Run Anywhere**: Same WASM works on any node
+- **No Host Recompilation**: Add new I2C sensors without Rust changes
 
-    style DHT22 fill:#ff6666,stroke:#333
-    style GPIO fill:#ff6666,stroke:#333
-    style SensorApp fill:#66ff66,stroke:#333,color:black
-    style DashboardApp fill:#66bbff,stroke:#333,color:black
-    style Host fill:#eee,stroke:#333
-```
+### 3. Hot Reload
+Update plugin Python code → rebuild WASM → host auto-reloads without restart.
 
-### 🎥 Live Demos
-We have captured the following capabilities in action:
+### 4. Multi-Node Dashboard
+Single dashboard shows:
+- DHT22 & BME680 sensor data
+- All three node health stats
+- Log viewer with tabs for HUB/PI4/PIZERO
+- Buzzer controls
 
-#### 1. Dashboard Hot Swap (Terminal/CRT Theme)
-[![Watch Dashboard Demo](https://img.shields.io/badge/Watch_Visual_Update-Streamable-33ff33?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/klbojw)
-
-#### 2. Sensor Hot Swap (Logic Update)
-[![Watch Sensor Demo](https://img.shields.io/badge/Watch_Logic_Update-Streamable-00aaff?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/cd3050)
-
-> **Key Takeaway**: The Rust host acts as a stable "Operating System", dealing with GPIO and networking, while the Python guests provide flexible, hot-reloadable "User Space" logic.
-
-## 🎨 User Experience Features
-
-The dashboard demonstrates modern web UX patterns:
-
-- **Live Updates**: Browser polls `/api` endpoint every 2 seconds via JavaScript `fetch()`
-- **Smooth Animations**: Temperature and humidity values fade out → update → fade in (300ms total)
-- **No Page Refresh**: Only the numbers update, eliminating jarring full-page reloads
-- **Terminal Aesthetic**: Retro CRT theme with green-on-black colors and scanline effects
-- **Responsive Design**: Mobile-friendly layout with CSS Grid
-
-**API Endpoint:**
-```bash
-curl http://raspberry-pi:3000/api
-```
-
-**Response:**
-```json
-{
-  "readings": [
-    {
-      "temperature": 21.5,
-      "humidity": 40.9,
-      "timestamp_ms": 1737073200000
-    }
-  ],
-  "last_update": 1737073200000
-}
-```
-
-This `/api` endpoint enables:
-- Programmatic access to sensor data
-- Third-party integrations (Home Assistant, Grafana, etc.)
-- Custom dashboards and mobile apps
-
-## 🔌 Hardware Requirements
-
-To run this demo, you need:
-1.  **Raspberry Pi** (3, 4, or 5)
-2.  **DHT22 Temperature/Humidity Sensor**
-3.  **Wiring**:
-    *   **VCC (+) [Pin 1]** → 3.3V (Physical Pin 1)
-    *   **Data [Pin 2]** → **GPIO 4 (Physical Pin 7)**
-    *   **GND (-) [Pin 4]** → Ground (Physical Pin 6)
-    *   *Note: Most modules have a built-in pull-up resistor. If using a raw sensor, add a 4.7kΩ resistor between VCC and Data.*
-
-> **Why GPIO 4?** The host is hardcoded to use BCM GPIO 4 (Physical Pin 7) for simplicity in this demo.
-
-## 💡 Why This Architecture Matters
-
-**Is this overengineering? No.**
-
-If your *only* goal is to read a sensor, a 5-line Python script is better. But this project demonstrates an architecture for **Secure, Multi-Tenant Edge Computing**.
-
-**Why use this architecture?**
-1.  **Security Isolation**: The Python code runs in a sandbox. If you download a plugin from the internet, it physically cannot hack your network or access files unless you explicitly grant that capability in `plugin.wit`.
-2.  **Resilience**: If the Python plugin crashes or hangs (e.g., bad sensor read), the Rust host survives. We implemented a "Dead Man's Switch" in `gpio.rs` so a stuck plugin never freezes the device.
-3.  **Hot Swapping**: You can update the business logic (Python) over-the-air without rebooting the system or dropping active network connections.
-4.  **Polyglot**: You can mix and match languages. One plugin can be Python (for data science), another Rust (for speed), another JavaScript.
-
-## 🏗️ Migration Strategy (How to use this as a model)
-
-**"I have a massive Python legacy codebase. How do I use this?"**
-
-Don't rewrite everything at once. Use the **Strangler Fig Pattern**:
-
-1.  **Identify the Core**: Find the one piece of logic you change most often (e.g., "Business Logic" or "Data Formatting").
-2.  **Move just THAT to WASM**: Keep your hardware drivers in Python on the host (or migrate them to Rust later), but run the changing logic in a sandbox.
-3.  **Define the Interface**: Write a `.wit` file that describes what that one piece of logic needs (inputs/outputs).
-4.  **Swap it out**: Replace the Python function call with a call to the WASM module.
-
-**Why is this better?**
-*   Legacy code runs as usual.
-*   New/Risky code runs in a sandbox.
-*   If the new code crashes, it's caught by the host. It doesn't crash the whole robot/server.
-
-| Feature | Raw Python Script | This WASI Host |
-| :--- | :--- | :--- |
-| **Simplicity** | High (Easy) | Medium (Requires Build) |
-| **Security** | None (Full Access) | **Sandboxed (Capability Model)** |
-| **Isolation** | Process Level | **WASM Level (Micro-VM)** |
-| **Hot Reload** | Restart Process | **Instant (No Restart)** |
-| **Stability** | Crash = Downtime | **Crash = Log Error & Retry** |
-
-## Quick Start (On Raspberry Pi)
+## Quick Start
 
 ### Prerequisites
+- Rust toolchain
+- Python 3.11+ with `componentize-py`
+- Configured `.env` file with node IPs
 
-- Raspberry Pi with DHT22 sensor on GPIO pin 4
-- Rust toolchain installed (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-- Python 3.11+ with adafruit_dht (`pip3 install adafruit-circuitpython-dht`)
-- componentize-py (`pip3 install componentize-py`)
-
-### Build & Run
+### Build & Deploy
 
 ```bash
-# 1. Build Python plugins to WASM
-cd plugins/sensor
-componentize-py -d ../../wit -w sensor-plugin componentize app -o sensor.wasm
+# Build plugins to WASM
+./scripts/build-plugins-wsl.sh
 
-cd ../dashboard
-componentize-py -d ../../wit -w dashboard-plugin componentize app -o dashboard.wasm
+# Deploy to all nodes
+./scripts/update-all-nodes.sh
 
-# 2. Build and run the Rust host
-cd ../../host
-cargo run --release
-
-# 3. Open http://raspberry-pi-ip:3000 in browser
+# Or deploy just plugins
+./scripts/update-plugins.sh
 ```
 
-You'll see **real temperature and humidity** from your DHT22 sensor!
+### Run Host
 
-## 📜 The WIT "Constitution"
+```bash
+cd host
+cargo run --release --config config/spoke.toml
+```
 
-The `wit/plugin.wit` file is the most important file in this project. It is not just code; it is the **Security Contract**.
+Dashboard available at `http://192.168.7.10:3000`
+
+## WIT Interface (API Contract)
 
 ```wit
-// The HOST provides this to the sandboxed WASM plugin
+package demo:plugin@0.2.0;
+
+// Generic I2C for any sensor
+interface i2c {
+    transfer: func(addr: u8, write-data: string, read-len: u32) -> result<string, string>;
+}
+
+// GPIO operations
 interface gpio-provider {
     read-dht22: func(pin: u8) -> result<tuple<f32, f32>, string>;
     get-timestamp-ms: func() -> u64;
+    get-cpu-temp: func() -> f32;
 }
 
-// The PLUGIN implements this, host calls it
-interface sensor-logic {
-    poll: func() -> list<sensor-reading>;
-}
-```
-
-**Why highlight this?**
-*   **Deny by Default**: If a function isn't in this file, the Python guest *literally cannot call it*. There is no `import os`, no `subprocess`, no network.
-*   **Type Safety**: The host guarantees it triggers `poll()`, and the guest guarantees it returns a `list<sensor-reading>`. No JSON parsing errors at runtime.
-
-## How It Works
-
-### 1. Python Calls the Host Capability
-
-### 2. Python Calls the Host Capability
-
-```python
-# app.py (runs in WASM sandbox)
-from wit_world.imports import gpio_provider
-
-class SensorLogic(SensorLogic):
-    def poll(self) -> list[SensorReading]:
-        # This calls the RUST HOST which reads the actual hardware
-        temperature, humidity = gpio_provider.read_dht22(4)
-        
-        return [SensorReading(
-            sensor_id="dht22-gpio4",
-            temperature=temperature,
-            humidity=humidity,
-            timestamp_ms=gpio_provider.get_timestamp_ms(),
-        )]
-```
-
-### 3. Rust Implements the Capability
-
-```rust
-// The host provides this implementation
-impl gpio_provider::Host for HostState {
-    async fn read_dht22(&mut self, pin: u8) -> Result<(f32, f32), String> {
-        // Offloaded to blocking thread for responsiveness AND reliability
-        tokio::task::spawn_blocking(move || {
-            gpio::read_dht22(pin)
-        }).await ...
-    }
+// System metrics
+interface system-info {
+    get-memory-usage: func() -> tuple<u32, u32>;
+    get-cpu-usage: func() -> f32;
+    get-uptime: func() -> u64;
 }
 ```
 
-## Industry Context
+## Project Structure
 
-This architecture is used in production by:
-
-| Company | Use Case |
-|---------|----------|
-| **Fermyon Spin** | Serverless Python with capability-based security |
-| **wasmCloud** | Distributed IoT/edge actors with sandboxed plugins |
-| **Shopify** | Sandboxed merchant scripts |
-| **Siemens** | IoT edge computing with isolated sensor modules |
-
-## Hot Reload Demo
-
-Edit the Python plugin, rebuild WASM, and see changes without restarting the host:
-
-```bash
-# Terminal 1: Run host
-cd host && cargo run --release
-
-# Terminal 2: Edit and rebuild
-vim ../plugins/sensor/app.py  # Make changes
-componentize-py -d ../../wit -w sensor-plugin componentize app -o sensor.wasm
-
-# The host detects the change and reloads automatically!
+```
+├── host/                 # Rust WASM host
+│   └── src/
+│       ├── main.rs       # Entry point, HTTP server
+│       ├── runtime.rs    # WASM loading, WIT bindings
+│       ├── gpio.rs       # Hardware access
+│       ├── hal.rs        # I2C/SPI/UART HAL
+│       └── config.rs     # Node configuration
+├── plugins/
+│   ├── bme680/           # Environmental sensor (I2C)
+│   ├── dht22/            # Temp/humidity (GPIO)
+│   ├── dashboard/        # Web UI
+│   ├── pi4-monitor/      # Pi4 health
+│   ├── revpi-monitor/    # RevPi health
+│   ├── pizero-monitor/   # PiZero health
+│   └── oled/             # Display driver
+├── wit/
+│   └── plugin.wit        # API contract
+├── config/
+│   ├── hub.toml          # RevPi config
+│   ├── spoke.toml        # Pi4 config
+│   └── pizero.toml       # PiZero config
+├── pizero-native/        # Native Python for PiZero
+├── scripts/              # Deployment scripts
+└── docs/                 # Architecture documentation
 ```
 
 ## License

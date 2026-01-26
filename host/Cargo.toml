@@ -12,37 +12,50 @@ repository = "https://github.com/YOUR_USERNAME/wasi-python-host"
 
 [dependencies]
 # WASMTIME - The WebAssembly runtime
-# This is the "engine" that executes WASM modules. It's developed by the
-# Bytecode Alliance (Mozilla, Fastly, Intel, Red Hat).
-# The "component-model" feature enables WASI Preview 2 support.
 wasmtime = { version = "29", features = ["component-model"] }
-
-# WASMTIME-WASI - WASI implementation for wasmtime
-# Provides system capabilities (stdio, filesystem, clocks) to WASM modules.
-# Think of it as the "operating system" for your WASM sandbox.
 wasmtime-wasi = "29"
 
 # TOKIO - Async runtime
-# WASM component model operations are async, so we need an async runtime.
 tokio = { version = "1", features = ["full"] }
 
-# ANYHOW - Error handling
-# Makes error propagation cleaner with the ? operator.
+# ANYHOW
 anyhow = "1"
 
 # AXUM - Web framework
-# Serves the dashboard. Lightweight and async-native.
 axum = "0.7"
-
-# TOWER-HTTP - HTTP middleware
-# Provides CORS layer for the web server.
 tower-http = { version = "0.5", features = ["cors"] }
 
-# SERDE - Serialization
-# For JSON API responses.
+# SERDE
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# NOTIFY - File watching (for hot-reload)
-# Watches plugin files and triggers reload when they change.
+# NOTIFY
 notify = "6"
+
+# SYSINFO
+sysinfo = "0.30"
+
+# TOML
+toml = "0.8"
+
+# REQWEST
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+# RPPAL - Raspberry Pi Peripheral Access Library
+# Made OPTIONAL so we can compile on WSL/x86 without errors.
+rppal = { version = "0.19", optional = true }
+
+# HEX
+hex = "0.4"
+
+# TRACING (Structured Logging)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLAP (CLI Args)
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = []
+# "hardware" feature enables rppal. If disabled (default), we use Mock HAL.
+hardware = ["dep:rppal"]

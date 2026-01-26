@@ -1,0 +1,49 @@
+# ==============================================================================
+# WASI Host Configuration - HUB NODE
+# ==============================================================================
+
+[cluster]
+role = "hub"
+hub_url = ""
+node_id = "revpi-hub"
+spoke_buzzer_url = "http://192.168.7.11:3001/buzzer"
+
+[polling]
+interval_seconds = 2
+
+[sensors.dht22]
+gpio_pin = 4
+
+[sensors.bme680]
+i2c_address = "0x77"
+
+[leds]
+count = 11
+gpio_pin = 18
+brightness = 50
+
+[buzzer]
+gpio_pin = 17
+
+[logging]
+level = "info"
+show_sensor_data = true
+
+# ==============================================================================
+# Plugin Configuration
+# ==============================================================================
+
+[plugins.dht22]
+enabled = false # Disabled on Hub (No sensors)
+led = 1
+
+[plugins.revpi_monitor]
+enabled = true
+led = 0
+
+[plugins.bme680]
+enabled = false # Disabled on Hub
+led = 2
+
+[plugins.dashboard]
+enabled = true # Enabled on Hub (UI)

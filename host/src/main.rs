@@ -1,290 +1,233 @@
 //! ==============================================================================
-//! main.rs - wasi host runtime entry point
+//! main.rs - WASI Host Runtime (Standalone Edition)
 //! ==============================================================================
 //!
 //! purpose:
-//!     this is the "landlord" application that hosts python wasm plugins.
-//!     it demonstrates the wasi component model pattern used in production by
-//!     fermyon spin, wasmcloud, and other serverless/edge platforms.
+//!     the entry point for the standalone host.
+//!     initializes the Web API and the WASM Runtime.
 //!
-//! responsibilities:
-//!     - initialize wasmtime engine (wasm execution environment)
-//!     - load python wasm plugins (sensor.wasm, dashboard.wasm)
-//!     - provide wasi capabilities (stdio, clocks) to sandboxed plugins
-//!     - run polling loop to collect sensor data
-//!     - serve web dashboard with data from wasm-rendered html
-//!     - detect and apply hot reloads when plugins change
-//!
-//! relationships:
-//!     - uses: runtime.rs (wasm loading, plugin execution, hot reload)
-//!     - reads: ../wit/plugin.wit (interface definitions, via runtime.rs)
-//!     - loads: ../plugins/sensor/sensor.wasm (python sensor logic)
-//!     - loads: ../plugins/dashboard/dashboard.wasm (python html rendering)
-//!
-//! architecture:
-//!
-//!     ┌─────────────────────────────────────────────────────────────┐
-//!     │                    rust host (this file)                     │
-//!     │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-//!     │  │ poll loop   │  │ web server  │  │ hot reload watcher  │  │
-//!     │  │ (2s cycle)  │  │ (port 3000) │  │ (file timestamps)   │  │
-//!     │  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
-//!     │         │                │                    │             │
-//!     │         └────────────────┼────────────────────┘             │
-//!     │                          │                                  │
-//!     │                    ┌─────┴─────┐                            │
-//!     │                    │  runtime  │ <- runtime.rs              │
-//!     │                    └─────┬─────┘                            │
-//!     │     (Clone-able handle to shared engine & plugin state)      │
-//!     └──────────────────────────┼──────────────────────────────────┘
-//!                                │ wit interface
-//!                    ┌───────────┴───────────┐
-//!                    ▼                       ▼
-//!             ┌─────────────┐         ┌─────────────┐
-//!             │ sensor.wasm │         │ dashboard   │
-//!             │  (python)   │         │   .wasm     │
-//!             └─────────────┘         └─────────────┘
-//!
-//! security model:
-//!     plugins run in a sandbox. they CANNOT:
-//!     - access the filesystem (unless host grants it)
-//!     - make network requests (unless host grants it)
-//!     - call arbitrary host functions
-//!     - interfere with other plugins
-//!
-//!     they CAN only:
-//!     - execute pure computation
-//!     - use wasi capabilities explicitly granted (here: stdio, clocks)
-//!     - return data through the wit interface
-//!
-//! industry usage:
-//!     this architecture is used in production by:
-//!     - fermyon spin: serverless functions with <1ms cold starts
-//!     - shopify functions: sandboxed merchant logic
-//!     - wasmcloud: distributed iot/edge applications
-//!     - cloudflare workers: (moving to component model)
+//! modules:
+//!     - config: loads host.toml
+//!     - runtime: wasmtime integration
+//!     - domain: shared state types
+//!     - hal: hardware abstraction
 //!
 //! ==============================================================================
 
-mod gpio;
+mod config;
 mod runtime;
+mod domain;
+mod hal;
 
 use anyhow::Result;
 use axum::{
     Router,
-    routing::get,
-    response::{Html, Json},
+    routing::{get, post},
+    response::{Html, Json, IntoResponse},
     extract::State,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
+use crate::domain::{AppState, SensorReading};
 
-// ==============================================================================
-// shared state
-// ==============================================================================
-// this struct holds sensor readings that are shared between:
-// - the polling loop (writes new readings)
-// - the web server (reads for api and dashboard)
-//
-// we use arc<rwlock<>> for thread-safe sharing:
-// - arc: reference-counted pointer for sharing across tasks
-// - rwlock: multiple readers OR one writer (sensors write, http reads)
-
-#[derive(Clone, Default, serde::Serialize)]
-pub struct AppState {
-    /// current sensor readings
-    pub readings: Vec<SensorReading>,
-    /// unix timestamp (ms) of last successful update
-    pub last_update: u64,
+#[derive(Clone)]
+struct ApiState {
+    state: Arc<RwLock<AppState>>,
+    #[allow(dead_code)]
+    runtime: runtime::WasmRuntime,
+    #[allow(dead_code)]
+    config: config::HostConfig,
 }
-
-#[derive(Clone, serde::Serialize)]
-pub struct SensorReading {
-    /// unique sensor identifier (e.g., "dht22-gpio4")
-    pub sensor_id: String,
-    /// temperature in celsius
-    pub temperature: f32,
-    /// relative humidity (0-100%)
-    pub humidity: f32,
-    /// reading timestamp in milliseconds
-    pub timestamp_ms: u64,
-}
-
-// ==============================================================================
-// main entry point
-// ==============================================================================
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // startup banner
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     println!("===========================================================");
-    println!("  WASI Python Host - Reference Demo");
+    println!("  WASI Host - Standalone Edition");
     println!("===========================================================");
-    println!("  Demonstrates:");
-    println!("    - Python code running as WASM components");
-    println!("    - Type-safe cross-language calls via WIT");
-    println!("    - Hot reload without restart");
-    println!("    - Sandboxed plugin execution");
-    println!("===========================================================");
-    println!();
     
-    // step 1: initialize shared state
-    // arc<rwlock<>> enables safe concurrent access from multiple tasks
+    // 1. Load Config
+    let config = config::HostConfig::load_or_default();
+    config.print_summary();
+    
+    // 2. Initialize Shared State
     let state = Arc::new(RwLock::new(AppState::default()));
     
-    // step 2: initialize the wasm runtime
-    // this loads our python plugins compiled to wasm
-    println!("[*] Initializing WASM runtime...");
-    let runtime = match runtime::WasmRuntime::new() {
-        Ok(r) => {
-            println!("[OK] WASM runtime ready");
-            r // NO WRAPPER - WasmRuntime is now thread-safe (Clone)
-        }
-        Err(e) => {
-            // fatal error - can't proceed without runtime
-            eprintln!("[ERROR] Fatal: failed to create wasm runtime: {}", e);
-            eprintln!("   ensure wasmtime is installed and wit files are valid");
-            return Err(e);
-        }
+    // 3. Initialize WASM Runtime (with HAL)
+    println!("\n[STARTUP] Initializing WASM Runtime...");
+    let runtime = runtime::WasmRuntime::new(std::path::PathBuf::from(".."), &config).await?;
+    
+    // 4. Start Web/API Server
+    let api_state = ApiState {
+        state: state.clone(),
+        runtime: runtime.clone(),
+        config: config.clone(),
     };
+
+    // Use a hardcoded bind address for the API for now, or add to config if needed
+    let bind_addr = "0.0.0.0:3000";
+    println!("[STARTUP] API listening on {}", bind_addr);
     
-    // step 3: start the web server in background
-    println!();
-    println!("[*] Web server on http://0.0.0.0:3000");
-    println!("    GET /           -> Dashboard (HTML from Python WASM)");
-    println!("    GET /api/sensors -> JSON API");
-    println!();
+    let app = Router::new()
+        .route("/", get(dashboard_handler))
+        .route("/api/readings", get(api_handler))
+        .route("/api/buzzer/test", post(buzzer_test_handler)) // Manual trigger
+        .route("/push", post(push_handler)) // Hub endpoint to receive data
+        .fallback(fallback_handler)
+        .layer(CorsLayer::permissive())
+        .with_state(api_state.clone());
+        
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     
-    let web_state = state.clone();
-    let web_runtime = runtime.clone(); // independent clone for web server
+    // Spawn server
     tokio::spawn(async move {
-        if let Err(e) = run_server(web_state, web_runtime).await {
-            eprintln!("[ERROR] Web server error: {}", e);
-        }
+        axum::serve(listener, app).await.unwrap();
     });
+
+    // 5. Start Polling Loop
+    let poll_interval = config.polling.interval_seconds;
+    let hub_url = config.cluster.hub_url.clone();
+    let is_spoke = config.cluster.role == "spoke";
+    let node_id = config.cluster.node_id.clone();
+
+    println!("[RUNTIME] Starting sensor polling loop ({}s interval) as {}", poll_interval, config.cluster.role);
     
-    // step 4: main polling loop
-    println!("[*] Sensor polling loop (5s interval)");
-    println!("    Tip: Edit Python plugins and rebuild WASM - hot reload will pick up changes!");
-    println!();
-    println!("-----------------------------------------------------------");
-    
-    // polling loop owns its own copy of runtime methods
-    // no locking required because internal state is protected
+    let client = reqwest::Client::new();
+    let mut heartbeat = false;
+
     loop {
-        // poll sensors - this calls the python wasm plugin
+        tokio::time::sleep(tokio::time::Duration::from_secs(poll_interval)).await;
+
+        // 0. Host Heartbeat (LED 0)
+        heartbeat = !heartbeat;
+        {
+            let hal = crate::hal::Hal::new();
+            use crate::hal::HardwareProvider;
+            if heartbeat {
+                let _ = hal.set_led(0, 0, 0, 255); // Solid Blue
+            } else {
+                let _ = hal.set_led(0, 0, 100, 255); // Cyan-ish blink
+            }
+            let _ = hal.sync_leds();
+        }
+
+        // 1. Hot Reload Plugins
+        runtime.check_hot_reload().await;
+
+        // 2. Poll sensors and update local state
         match runtime.poll_sensors().await {
-            Ok(readings) => {
-                // only update state if we got valid readings
-                // (prevents ui showing zeros on transient errors)
+            Ok(mut readings) => {
+                // Add node_id to sensor_id for clarity
+                for r in &mut readings {
+                    r.sensor_id = format!("{}:{}", node_id, r.sensor_id);
+                }
+
                 if !readings.is_empty() {
-                    println!("[SENSOR] {:.1}C, {:.1}%", 
-                        readings[0].temperature, 
-                        readings[0].humidity
-                    );
+                    let mut s = state.write().await;
+                    // Merge local readings into state instead of overwriting
+                    for nr in &readings {
+                        if let Some(pos) = s.readings.iter().position(|r| r.sensor_id == nr.sensor_id) {
+                            s.readings[pos] = nr.clone();
+                        } else {
+                            s.readings.push(nr.clone());
+                        }
+                    }
                     
-                    // update shared state
-                    let mut state = state.write().await;
-                    state.readings = readings;
-                    state.last_update = std::time::SystemTime::now()
+                    s.last_update = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_millis() as u64;
+                    
+                    // 3. If Spoke, forward to Hub
+                    if is_spoke && !hub_url.is_empty() {
+                        match client.post(&hub_url).json(&readings).send().await {
+                            Ok(_) => tracing::info!("Pushed {} readings to hub at {}", readings.len(), hub_url),
+                            Err(e) => tracing::error!("Failed to push to hub: {}", e),
+                        }
+                    } else {
+                        tracing::info!("State updated with {} readings", readings.len());
+                    }
                 }
             }
             Err(e) => {
-                // log error but continue - resilient operation
-                eprintln!("[WARN] Sensor error: {:#}", e);
+                tracing::error!("Sensor polling failed: {}", e);
             }
         }
-        
-        // dht22 sensors are slow and can heat up if polled too fast
-        // 5 seconds is a safe, stable interval
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
 }
 
 // ==============================================================================
-// web server
+// HANDLERS
 // ==============================================================================
-// serves the dashboard html (rendered by python wasm) and a json api.
-// uses axum for ergonomic async http handling.
 
-async fn run_server(
-    state: Arc<RwLock<AppState>>,
-    runtime: runtime::WasmRuntime, // NO Arc<RwLock<>> wrapper
-) -> Result<()> {
-    // create router with shared state
-    let app = Router::new()
-        // dashboard endpoint - html rendered by python wasm
-        .route("/", get(dashboard_handler))
-        // json api for programmatic access
-        .route("/api", get(api_handler))
-        // enable cors for development convenience
-        .layer(CorsLayer::permissive())
-        // share state and runtime with handlers
-        .with_state((state, runtime));
+async fn dashboard_handler(State(api_state): State<ApiState>) -> impl IntoResponse {
+    let s = api_state.state.read().await;
     
-    // bind and serve
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    axum::serve(listener, app).await?;
+    // Convert current aggregated state to JSON for the dashboard plugin
+    let json_data = serde_json::to_string(&*s).unwrap_or_else(|_| "{}".to_string());
     
-    Ok(())
-}
-
-/// dashboard endpoint - html is rendered by the python wasm plugin!
-///
-/// this demonstrates the power of the component model:
-/// - rust handles http (fast, secure)
-/// - python handles templating (flexible, familiar)
-/// - communication is type-safe via wit
-async fn dashboard_handler(
-    State((state, runtime)): State<(Arc<RwLock<AppState>>, runtime::WasmRuntime)>,
-) -> Html<String> {
-    let state = state.read().await;
-    // NO runtime lock needed
-    
-    // get latest reading (or defaults if none)
-    let (temp, humidity) = state.readings.first()
-        .map(|r| (r.temperature, r.humidity))
-        .unwrap_or((0.0, 0.0));
-    
-    // call python wasm to render html!
-    match runtime.render_dashboard(temp, humidity).await {
-        Ok(html) => Html(html),
+    // Call the WASM Dashboard plugin to render the HTML
+    match api_state.runtime.render_dashboard(json_data).await {
+        Ok(html) => Html(html).into_response(),
         Err(e) => {
-            // render error page if plugin fails
-            Html(format!(
-                r#"<!doctype html>
-<html>
-<head><title>error</title></head>
-<body style="font-family: system-ui; padding: 2rem; background: #1a1a2e; color: #eee;">
-    <h1 style="color: #ff6b6b;">⚠️ dashboard error</h1>
-    <p>failed to render dashboard from python wasm plugin:</p>
-    <pre style="background: #16213e; padding: 1rem; border-radius: 8px; overflow-x: auto;">{}</pre>
-    <p style="color: #888;">check that dashboard.wasm is built and located at plugins/dashboard/dashboard.wasm</p>
-</body>
-</html>"#,
-                html_escape(&format!("{:#}", e))
-            ))
+            tracing::error!("Dashboard plugin failed: {}", e);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Dashboard Logic Error").into_response()
         }
     }
 }
 
-/// json api endpoint for programmatic access
-/// returns current sensor readings as json
-async fn api_handler(
-    State((state, _)): State<(Arc<RwLock<AppState>>, runtime::WasmRuntime)>,
-) -> Json<AppState> {
-    let state = state.read().await;
-    Json(state.clone())
+async fn api_handler(State(state): State<ApiState>) -> Json<AppState> {
+    let s = state.state.read().await;
+    Json(s.clone())
 }
 
-/// escape html special characters to prevent xss
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
+/// Receives sensor data from spoke nodes
+async fn push_handler(
+    State(state): State<ApiState>,
+    Json(new_readings): Json<Vec<SensorReading>>,
+) -> impl axum::response::IntoResponse {
+    let mut s = state.state.write().await;
+    
+    // Merge readings from this spoke into global state
+    // We update/replace readings with the same sensor_id
+    for nr in new_readings {
+        if let Some(pos) = s.readings.iter().position(|r| r.sensor_id == nr.sensor_id) {
+            s.readings[pos] = nr;
+        } else {
+            s.readings.push(nr);
+        }
+    }
+    
+    s.last_update = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    
+    tracing::info!("Hub received data push (total sensors tracked: {})", s.readings.len());
+    axum::http::StatusCode::OK
+}
+
+/// Manually trigger the buzzer for testing
+async fn buzzer_test_handler() -> impl IntoResponse {
+    let hal = crate::hal::Hal::new();
+    use crate::hal::HardwareProvider;
+    
+    // 3 short beeps
+    for _ in 0..3 {
+        let _ = hal.write_gpio(17, false); // Active low on
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let _ = hal.write_gpio(17, true); // Active low off
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    
+    axum::http::StatusCode::OK
+}
+
+async fn fallback_handler() -> (axum::http::StatusCode, String) {
+    (axum::http::StatusCode::NOT_FOUND, "Not Found".to_string())
 }

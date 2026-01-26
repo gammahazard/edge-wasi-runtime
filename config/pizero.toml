@@ -1,0 +1,47 @@
+# ==============================================================================
+# WASI Host Configuration - PI ZERO SPOKE (Failsafe Node)
+# ==============================================================================
+
+[cluster]
+role = "spoke"
+# The Hub's push endpoint
+hub_url = "http://192.168.7.10:3000/push" 
+node_id = "pizero-failsafe-spoke"
+
+[polling]
+interval_seconds = 2
+
+[sensors.dht22]
+gpio_pin = 4
+
+[sensors.bme680]
+i2c_address = "0x77"
+
+[leds]
+count = 11
+gpio_pin = 18
+brightness = 50
+
+[buzzer]
+gpio_pin = 17
+
+[logging]
+level = "info"
+show_sensor_data = true
+
+# ==============================================================================
+# Plugin Configuration
+# ==============================================================================
+
+[plugins.dht22]
+enabled = false # DISABLED on Pi Zero
+
+[plugins.pi4_monitor]
+enabled = false # DISABLED on Pi Zero
+
+[plugins.bme680]
+enabled = true # Safe to enable on Pi Zero (Passive Mode enabled by host)
+led = 2
+
+[plugins.dashboard]
+enabled = false # Disabled on Spoke (Headless)
