@@ -289,10 +289,70 @@ impl pi4_monitor_bindings::demo::plugin::buzzer_controller::Host for HostState {
     }
 }
 
+// ==============================================================================
+// Real system info helpers (read from /proc on Linux, fallback for other OS)
+// ==============================================================================
+
+fn get_real_memory_usage() -> (u32, u32) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+            let mut total: u32 = 0;
+            let mut available: u32 = 0;
+            for line in content.lines() {
+                if line.starts_with("MemTotal:") {
+                    total = line.split_whitespace().nth(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) / 1024;
+                } else if line.starts_with("MemAvailable:") {
+                    available = line.split_whitespace().nth(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) / 1024;
+                }
+            }
+            let used = total.saturating_sub(available);
+            return (used, total);
+        }
+    }
+    (0, 0)
+}
+
+fn get_real_cpu_usage() -> f32 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/loadavg") {
+            // Returns 1-minute load average as percentage (rough approximation)
+            if let Some(load) = content.split_whitespace().next() {
+                if let Ok(val) = load.parse::<f32>() {
+                    // Convert load average to rough percentage (assuming 4 cores)
+                    return (val / 4.0 * 100.0).min(100.0);
+                }
+            }
+        }
+    }
+    0.0
+}
+
+fn get_real_uptime() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/uptime") {
+            if let Some(uptime_str) = content.split_whitespace().next() {
+                if let Ok(uptime_secs) = uptime_str.parse::<f64>() {
+                    return uptime_secs as u64;
+                }
+            }
+        }
+    }
+    0
+}
+
 impl pi4_monitor_bindings::demo::plugin::system_info::Host for HostState {
-    async fn get_memory_usage(&mut self) -> (u32, u32) { (1024, 4096) }
-    async fn get_cpu_usage(&mut self) -> f32 { 10.5 }
-    async fn get_uptime(&mut self) -> u64 { 12345 }
+    async fn get_memory_usage(&mut self) -> (u32, u32) {
+        get_real_memory_usage()
+    }
+    async fn get_cpu_usage(&mut self) -> f32 {
+        get_real_cpu_usage()
+    }
+    async fn get_uptime(&mut self) -> u64 {
+        get_real_uptime()
+    }
 }
 
 // ==============================================================================
@@ -342,9 +402,15 @@ impl revpi_monitor_bindings::demo::plugin::buzzer_controller::Host for HostState
 }
 
 impl revpi_monitor_bindings::demo::plugin::system_info::Host for HostState {
-    async fn get_memory_usage(&mut self) -> (u32, u32) { (2048, 8192) }
-    async fn get_cpu_usage(&mut self) -> f32 { 5.2 }
-    async fn get_uptime(&mut self) -> u64 { 54321 }
+    async fn get_memory_usage(&mut self) -> (u32, u32) {
+        get_real_memory_usage()
+    }
+    async fn get_cpu_usage(&mut self) -> f32 {
+        get_real_cpu_usage()
+    }
+    async fn get_uptime(&mut self) -> u64 {
+        get_real_uptime()
+    }
 }
 
 

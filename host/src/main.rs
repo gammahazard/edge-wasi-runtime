@@ -24,12 +24,32 @@ use axum::{
     Router,
     routing::{get, post},
     response::{Html, Json, IntoResponse},
-    extract::State,
+    extract::{State, Query},
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use std::sync::{Mutex, OnceLock};
+use std::collections::VecDeque;
 use tower_http::cors::CorsLayer;
 use crate::domain::{AppState, SensorReading};
+
+// Global log buffer for /api/logs endpoint
+static LOG_BUFFER: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+
+fn get_log_buffer() -> &'static Mutex<VecDeque<String>> {
+    LOG_BUFFER.get_or_init(|| Mutex::new(VecDeque::with_capacity(100)))
+}
+
+/// Add a message to the log buffer
+fn log_msg(msg: &str) {
+    if let Ok(mut buf) = get_log_buffer().lock() {
+        if buf.len() >= 100 {
+            buf.pop_front();
+        }
+        buf.push_back(msg.to_string());
+    }
+    println!("{}", msg);
+}
 
 #[derive(Clone)]
 struct ApiState {
@@ -47,9 +67,9 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    println!("===========================================================");
-    println!("  WASI Host - Standalone Edition");
-    println!("===========================================================");
+    log_msg("===========================================================");
+    log_msg("  WASI Host - Standalone Edition");
+    log_msg("===========================================================");
     
     // 1. Load Config
     let config = config::HostConfig::load_or_default();
@@ -59,7 +79,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(RwLock::new(AppState::default()));
     
     // 3. Initialize WASM Runtime (with HAL)
-    println!("\n[STARTUP] Initializing WASM Runtime...");
+    log_msg("[STARTUP] Initializing WASM Runtime...");
     let runtime = runtime::WasmRuntime::new(std::path::PathBuf::from(".."), &config).await?;
     
     // 4. Start Web/API Server
@@ -71,11 +91,13 @@ async fn main() -> Result<()> {
 
     // Use a hardcoded bind address for the API for now, or add to config if needed
     let bind_addr = "0.0.0.0:3000";
-    println!("[STARTUP] API listening on {}", bind_addr);
+    log_msg(&format!("[STARTUP] API listening on {}", bind_addr));
     
     let app = Router::new()
         .route("/", get(dashboard_handler))
         .route("/api/readings", get(api_handler))
+        .route("/api/logs", get(logs_handler))            // Dashboard log viewing
+        .route("/api/buzzer", post(buzzer_handler))       // Dashboard buzzer buttons
         .route("/api/buzzer/test", post(buzzer_test_handler)) // Manual trigger
         .route("/push", post(push_handler)) // Hub endpoint to receive data
         .fallback(fallback_handler)
@@ -95,7 +117,7 @@ async fn main() -> Result<()> {
     let is_spoke = config.cluster.role == "spoke";
     let node_id = config.cluster.node_id.clone();
 
-    println!("[RUNTIME] Starting sensor polling loop ({}s interval) as {}", poll_interval, config.cluster.role);
+    log_msg(&format!("[RUNTIME] Starting sensor polling loop ({}s interval) as {}", poll_interval, config.cluster.role));
     
     let client = reqwest::Client::new();
     let mut heartbeat = false;
@@ -146,16 +168,16 @@ async fn main() -> Result<()> {
                     // 3. If Spoke, forward to Hub
                     if is_spoke && !hub_url.is_empty() {
                         match client.post(&hub_url).json(&readings).send().await {
-                            Ok(_) => tracing::info!("Pushed {} readings to hub at {}", readings.len(), hub_url),
-                            Err(e) => tracing::error!("Failed to push to hub: {}", e),
+                            Ok(_) => log_msg(&format!("✅ Pushed {} readings to hub", readings.len())),
+                            Err(e) => log_msg(&format!("❌ Failed to push to hub: {}", e)),
                         }
                     } else {
-                        tracing::info!("State updated with {} readings", readings.len());
+                        log_msg(&format!("📊 State updated with {} readings", readings.len()));
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("Sensor polling failed: {}", e);
+                log_msg(&format!("❌ Sensor polling failed: {}", e));
             }
         }
     }
@@ -168,8 +190,47 @@ async fn main() -> Result<()> {
 async fn dashboard_handler(State(api_state): State<ApiState>) -> impl IntoResponse {
     let s = api_state.state.read().await;
     
-    // Convert current aggregated state to JSON for the dashboard plugin
-    let json_data = serde_json::to_string(&*s).unwrap_or_else(|_| "{}".to_string());
+    // Transform readings list into the format the dashboard plugin expects:
+    // {dht22: {...}, bme680: {...}, hub: {...}, pi4: {...}, pizero: {...}}
+    let mut dashboard_data = serde_json::json!({});
+    
+    for reading in &s.readings {
+        let sensor_id = &reading.sensor_id;
+        
+        // Parse sensor_id like "pi4:dht22" or "revpi-hub:revpi-monitor"
+        if sensor_id.contains("dht22") {
+            dashboard_data["dht22"] = reading.data.clone();
+        } else if sensor_id.contains("bme680") {
+            let mut bme = reading.data.clone();
+            // Add iaq_score at top level if it's nested
+            if let Some(iaq) = bme.get("iaq_score") {
+                dashboard_data["bme680"] = bme.clone();
+            } else {
+                dashboard_data["bme680"] = bme;
+            }
+        } else if sensor_id.contains("revpi-monitor") {
+            dashboard_data["hub"] = reading.data.clone();
+        } else if sensor_id.contains("pi4-monitor") {
+            dashboard_data["pi4"] = reading.data.clone();
+        } else if sensor_id.contains("pizero") && sensor_id.contains("monitor") {
+            // Only use the monitor reading for pizero card (has cpu_temp, memory)
+            let mut pz = reading.data.clone();
+            pz["online"] = serde_json::json!(true); // If we got data, it's online
+            dashboard_data["pizero"] = pz;
+        } else if sensor_id.contains("network") {
+            // Network health pings from PiZero
+            dashboard_data["network"] = reading.data.clone();
+        }
+    }
+    
+    // Add uptime to hub (should come from revpi-monitor plugin)
+    if let Some(hub) = dashboard_data.get_mut("hub") {
+        if hub.get("uptime_seconds").is_none() {
+            hub["uptime_seconds"] = serde_json::json!(0);
+        }
+    }
+    
+    let json_data = serde_json::to_string(&dashboard_data).unwrap_or_else(|_| "{}".to_string());
     
     // Call the WASM Dashboard plugin to render the HTML
     match api_state.runtime.render_dashboard(json_data).await {
@@ -184,6 +245,16 @@ async fn dashboard_handler(State(api_state): State<ApiState>) -> impl IntoRespon
 async fn api_handler(State(state): State<ApiState>) -> Json<AppState> {
     let s = state.state.read().await;
     Json(s.clone())
+}
+
+/// Returns logs for the dashboard
+async fn logs_handler() -> impl IntoResponse {
+    let logs: Vec<String> = if let Ok(buf) = get_log_buffer().lock() {
+        buf.iter().cloned().collect()
+    } else {
+        vec![]
+    };
+    Json(serde_json::json!({"logs": logs}))
 }
 
 /// Receives sensor data from spoke nodes
@@ -223,6 +294,56 @@ async fn buzzer_test_handler() -> impl IntoResponse {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let _ = hal.write_gpio(17, true); // Active low off
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    
+    axum::http::StatusCode::OK
+}
+
+/// Dashboard buzzer buttons
+#[derive(serde::Deserialize)]
+struct BuzzerQuery {
+    action: Option<String>,
+}
+
+async fn buzzer_handler(
+    State(state): State<ApiState>,
+    Query(params): Query<BuzzerQuery>,
+) -> impl IntoResponse {
+    let hal = crate::hal::Hal::new();
+    use crate::hal::HardwareProvider;
+    
+    let pin = state.config.buzzer.gpio_pin;
+    let action = params.action.unwrap_or_else(|| "beep".to_string());
+    
+    // CRITICAL: Set GPIO mode to output before writing
+    let _ = hal.set_gpio_mode(pin, "OUT");
+    
+    match action.as_str() {
+        "beep" => {
+            let _ = hal.write_gpio(pin, false); // On
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let _ = hal.write_gpio(pin, true);  // Off
+        }
+        "beep3" => {
+            for _ in 0..3 {
+                let _ = hal.write_gpio(pin, false);
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                let _ = hal.write_gpio(pin, true);
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+        "long" => {
+            let _ = hal.write_gpio(pin, false);
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            let _ = hal.write_gpio(pin, true);
+        }
+        "on" => {
+            let _ = hal.write_gpio(pin, false); // On
+        }
+        "off" => {
+            let _ = hal.write_gpio(pin, true);  // Off
+        }
+        _ => {}
     }
     
     axum::http::StatusCode::OK

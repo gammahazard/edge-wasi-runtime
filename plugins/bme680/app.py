@@ -120,8 +120,8 @@ class BME680Driver:
             return None
 
 
-# Initialize driver
-driver = BME680Driver(0x77)
+# Lazy init - can't call I2C at compile time
+driver = None
 
 # IAQ state
 gas_baseline = 0.0
@@ -132,7 +132,11 @@ bad_iaq_alarm = False
 
 class Bme680Logic(Bme680Logic):
     def poll(self) -> list[Bme680Reading]:
-        global gas_baseline, burn_in_count, gas_history, bad_iaq_alarm
+        global driver, gas_baseline, burn_in_count, gas_history, bad_iaq_alarm
+        
+        # Lazy init driver on first poll
+        if driver is None:
+            driver = BME680Driver(0x77)
         
         readings = []
         

@@ -94,11 +94,18 @@ class SSD1306:
             print(f"⚠️ OLED show error: {e}")
 
 
-display = SSD1306(OLED_ADDR)
+# Lazy init - can't call I2C at compile time
+display = None
 
 
 class OledLogic(OledLogic):
     def update(self, sensor_data: str):
+        global display
+        
+        # Lazy init on first call
+        if display is None:
+            display = SSD1306(OLED_ADDR)
+        
         try:
             data = json.loads(sensor_data)
             

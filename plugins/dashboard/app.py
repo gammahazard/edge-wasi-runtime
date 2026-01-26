@@ -42,18 +42,26 @@ class DashboardLogic(DashboardLogic):
         iaq = bme.get("iaq_score", 0)
         
         hub_cpu = hub.get("cpu_temp", 0.0)
+        hub_load = hub.get("cpu_usage", 0.0)
         hub_ram_used = hub.get("memory_used_mb", 0)
         hub_ram_total = hub.get("memory_total_mb", 0)
         hub_uptime = hub.get("uptime_seconds", 0)
         
         pi4_cpu = pi4.get("cpu_temp", 0.0)
+        pi4_load = pi4.get("cpu_usage", 0.0)
         pi4_ram_used = pi4.get("memory_used_mb", 0)
         pi4_ram_total = pi4.get("memory_total_mb", 0)
         
         pizero_cpu = pizero.get("cpu_temp", 0.0)
+        pizero_load = pizero.get("cpu_usage", 0.0)
         pizero_ram_used = pizero.get("memory_used_mb", 0)
         pizero_ram_total = pizero.get("memory_total_mb", 0)
         pizero_online = pizero.get("online", False)
+        
+        # Network health from PiZero pings
+        network = state.get("network", {})
+        hub_ping = network.get("192.168.7.10", -1)
+        pi4_ping = network.get("192.168.7.11", -1)
         
         # IAQ classification
         if iaq <= 50:
@@ -265,6 +273,7 @@ class DashboardLogic(DashboardLogic):
             <div class="card-title {'warn' if hub_cpu > 60 else ''}">REVPI HUB</div>
             <div class="value">{hub_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
+                <div class="metric"><span>CPU</span>{hub_load:.1f}%</div>
                 <div class="metric"><span>RAM</span>{hub_ram_used}/{hub_ram_total}MB</div>
             </div>
         </div>
@@ -273,6 +282,7 @@ class DashboardLogic(DashboardLogic):
             <div class="card-title {'warn' if pi4_cpu > 60 else ''}">PI4 SPOKE</div>
             <div class="value">{pi4_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
+                <div class="metric"><span>CPU</span>{pi4_load:.1f}%</div>
                 <div class="metric"><span>RAM</span>{pi4_ram_used}/{pi4_ram_total}MB</div>
             </div>
         </div>
@@ -281,7 +291,16 @@ class DashboardLogic(DashboardLogic):
             <div class="card-title">PIZERO <span class="node-status"><span class="dot {'online' if pizero_online else 'offline'}"></span>{'ONLINE' if pizero_online else 'OFFLINE'}</span></div>
             <div class="value">{pizero_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
+                <div class="metric"><span>CPU</span>{pizero_load:.1f}%</div>
                 <div class="metric"><span>RAM</span>{pizero_ram_used}/{pizero_ram_total}MB</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-title">NETWORK [PING from PIZERO]</div>
+            <div class="metrics" style="border-top: none; padding-top: 0;">
+                <div class="metric"><span class="dot {'online' if hub_ping >= 0 else 'offline'}"></span><span>HUB</span>{f'{hub_ping:.1f}ms' if hub_ping >= 0 else 'OFFLINE'}</div>
+                <div class="metric"><span class="dot {'online' if pi4_ping >= 0 else 'offline'}"></span><span>PI4</span>{f'{pi4_ping:.1f}ms' if pi4_ping >= 0 else 'OFFLINE'}</div>
             </div>
         </div>
     </div>
