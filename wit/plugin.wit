@@ -361,6 +361,14 @@ world revpi-monitor-plugin {
     export pi-monitor-logic;
 }
 
+world pizero-monitor-plugin {
+    import gpio-provider;
+    import led-controller;
+    import buzzer-controller;
+    import system-info;
+    export pi-monitor-logic;
+}
+
 world dashboard-plugin {
     export dashboard-logic;
 }
