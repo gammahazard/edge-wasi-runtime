@@ -8,6 +8,24 @@
 
 A **multi-node edge computing platform** using WASI Component Model for secure, sandboxed Python plugins on Raspberry Pi hardware.
 
+## 📸 Screenshots & Demos
+
+### Dashboard with Multi-Node Logs
+
+| Hub Logs | Pi4 Logs | PiZero Logs |
+|----------|----------|-------------|
+| ![Hub Logs](screenshots/hub-logs.png) | ![Pi4 Logs](screenshots/pi4-logs.png) | ![PiZero Logs](screenshots/pizero-logs.png) |
+
+### 🎥 Live Demos
+
+#### Dashboard Hot Swap
+[![Watch Dashboard Demo](https://img.shields.io/badge/Watch_Visual_Update-Streamable-33ff33?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/klbojw)
+
+#### Sensor Hot Swap
+[![Watch Sensor Demo](https://img.shields.io/badge/Watch_Logic_Update-Streamable-00aaff?style=for-the-badge&logo=streamable&logoColor=white)](https://streamable.com/cd3050)
+
+> **Key Takeaway**: The Rust host acts as a stable "Operating System", while Python plugins provide flexible, hot-reloadable "User Space" logic.
+
 ## Architecture Overview
 
 ```
