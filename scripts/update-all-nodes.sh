@@ -42,9 +42,10 @@ echo "🐍 [1/8] Building WASM Plugins locally..."
 # 1. UPDATE SOURCE & CONFIGS (SYNC)
 # ==============================================================================
 echo "📦 [2/8] Syncing source code to Hub..."
-ssh ${HUB_USER}@${HUB_IP} "mkdir -p ~/wasi-python-host/host/src ~/wasi-python-host/host/config"
+ssh ${HUB_USER}@${HUB_IP} "mkdir -p ~/wasi-python-host/host/src ~/wasi-python-host/host/config ~/wasi-python-host/wit"
 scp host/src/*.rs ${HUB_USER}@${HUB_IP}:~/wasi-python-host/host/src/
 scp host/Cargo.toml ${HUB_USER}@${HUB_IP}:~/wasi-python-host/host/
+scp wit/plugin.wit ${HUB_USER}@${HUB_IP}:~/wasi-python-host/wit/
 
 echo "⚙️ [3/8] Syncing CONFIG files to Nodes..."
 # Hub Config

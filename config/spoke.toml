@@ -25,6 +25,11 @@ brightness = 50
 [buzzer]
 gpio_pin = 17
 
+[fan]
+gpio_pin = 27
+threshold_on = 40.0    # Turn fan ON when CPU temp exceeds this (°C)
+threshold_off = 28.0   # Turn fan OFF when CPU temp drops below this (°C)
+
 [logging]
 level = "info"
 show_sensor_data = true

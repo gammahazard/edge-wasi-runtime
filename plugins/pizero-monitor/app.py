@@ -36,5 +36,6 @@ class PiMonitorLogic(PiMonitorLogic):
             memory_used_mb=used_mb,
             memory_total_mb=total_mb,
             uptime_seconds=uptime,
-            timestamp_ms=gpio_provider.get_timestamp_ms()
+            timestamp_ms=gpio_provider.get_timestamp_ms(),
+            fan_on=False  # No fan on Pi Zero
         )

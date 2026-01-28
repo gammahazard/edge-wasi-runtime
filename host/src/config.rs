@@ -25,6 +25,8 @@ pub struct HostConfig {
     #[allow(dead_code)]
     pub leds: LedConfig,
     pub buzzer: BuzzerConfig,
+    #[serde(default)]
+    pub fan: FanConfig,
     pub logging: LoggingConfig,
     #[serde(default)]
     pub cluster: ClusterConfig,
@@ -64,6 +66,23 @@ pub struct LedConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct BuzzerConfig {
     pub gpio_pin: u8,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FanConfig {
+    pub gpio_pin: u8,
+    pub threshold_on: f32,   // Turn fan ON when CPU temp exceeds this
+    pub threshold_off: f32,  // Turn fan OFF when CPU temp drops below this
+}
+
+impl Default for FanConfig {
+    fn default() -> Self {
+        Self {
+            gpio_pin: 27,
+            threshold_on: 40.0,
+            threshold_off: 28.0,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -168,6 +187,7 @@ impl Default for HostConfig {
             },
             leds: LedConfig { count: 11, gpio_pin: 18, brightness: 50 },
             buzzer: BuzzerConfig { gpio_pin: 17 },
+            fan: FanConfig::default(),
             logging: LoggingConfig { level: "info".to_string(), show_sensor_data: true },
             cluster: ClusterConfig::default(),
             plugins: PluginsConfig::default(),

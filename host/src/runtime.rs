@@ -289,6 +289,30 @@ impl pi4_monitor_bindings::demo::plugin::buzzer_controller::Host for HostState {
     }
 }
 
+impl pi4_monitor_bindings::demo::plugin::fan_controller::Host for HostState {
+    async fn set_fan(&mut self, on: bool) {
+        use std::sync::atomic::Ordering;
+        let pin = self.config.fan.gpio_pin;
+        let hal = crate::hal::Hal::new();
+        
+        // Update global fan state for tracking
+        crate::hal::GLOBAL_FAN_STATE.store(on, Ordering::SeqCst);
+        
+        // Use write_gpio like buzzer does - rppal maintains GPIO state
+        tokio::task::spawn_blocking(move || {
+            use crate::hal::HardwareProvider;
+            let _ = hal.set_gpio_mode(pin, "OUT");
+            // Active-low relay: write false = LOW = relay ON = fan running
+            let _ = hal.write_gpio(pin, !on);
+        }).await.ok();
+    }
+    
+    async fn get_fan_state(&mut self) -> bool {
+        use std::sync::atomic::Ordering;
+        crate::hal::GLOBAL_FAN_STATE.load(Ordering::SeqCst)
+    }
+}
+
 // ==============================================================================
 // Real system info helpers (read from /proc on Linux, fallback for other OS)
 // ==============================================================================
@@ -657,6 +681,7 @@ impl WasmRuntime {
                             "memory_used_mb": stats.memory_used_mb,
                             "memory_total_mb": stats.memory_total_mb,
                             "uptime_seconds": stats.uptime_seconds,
+                            "fan_on": stats.fan_on,
                         }),
                     });
                 }
@@ -677,6 +702,7 @@ impl WasmRuntime {
                             "memory_used_mb": stats.memory_used_mb,
                             "memory_total_mb": stats.memory_total_mb,
                             "uptime_seconds": stats.uptime_seconds,
+                            "fan_on": stats.fan_on,
                         }),
                     });
                 }

@@ -35,5 +35,6 @@ class PiMonitorLogic(PiMonitorLogic):
             memory_used_mb=mem_used,
             memory_total_mb=mem_total,
             uptime_seconds=uptime,
-            timestamp_ms=timestamp
+            timestamp_ms=timestamp,
+            fan_on=False  # No fan on RevPi Hub
         )

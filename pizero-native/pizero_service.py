@@ -96,14 +96,25 @@ def start_api_server():
     server.serve_forever()
 
 # ==============================================================================
-# BME680 DRIVER (Simplified - matches our WASM plugin logic)
+# BME680 DRIVER (Full calibration - matches our WASM plugin logic exactly)
 # ==============================================================================
 class BME680:
     def __init__(self, bus_num=1, addr=0x77):
         self.bus = smbus2.SMBus(bus_num)
         self.addr = addr
         self.cal = {}
+        self.t_fine = 0.0
         self._initialized = False
+        # IAQ adaptive baseline
+        self.gas_baseline = 0.0
+        self.burn_in_count = 0
+        self.gas_history = []
+    
+    def _signed8(self, val):
+        return val if val < 128 else val - 256
+    
+    def _signed16(self, val):
+        return val if val < 32768 else val - 65536
     
     def init_sensor(self):
         if self._initialized:
@@ -115,18 +126,52 @@ class BME680:
                 print(f"⚠️ BME680: Unexpected Chip ID {hex(chip_id)}")
                 return False
             
-            # Read temperature calibration
+            # ===== TEMPERATURE CALIBRATION =====
             t1_data = self.bus.read_i2c_block_data(self.addr, 0xE9, 2)
-            self.cal['t1'] = (t1_data[1] << 8) | t1_data[0]
+            self.cal['t1'] = t1_data[0] | (t1_data[1] << 8)  # unsigned 16-bit
             
-            t2_data = self.bus.read_i2c_block_data(self.addr, 0x8A, 2)
-            t2 = (t2_data[1] << 8) | t2_data[0]
-            self.cal['t2'] = t2 if t2 < 32768 else t2 - 65536
+            t23_data = self.bus.read_i2c_block_data(self.addr, 0x8A, 3)
+            self.cal['t2'] = self._signed16(t23_data[0] | (t23_data[1] << 8))
+            self.cal['t3'] = self._signed8(t23_data[2])
             
-            t3_data = self.bus.read_byte_data(self.addr, 0x8C)
-            self.cal['t3'] = t3_data if t3_data < 128 else t3_data - 256
+            print(f"📊 [BME680] Temp cal: t1={self.cal['t1']} t2={self.cal['t2']} t3={self.cal['t3']}")
             
-            print(f"🟢 BME680: Initialized | Cal: T1={self.cal['t1']} T2={self.cal['t2']} T3={self.cal['t3']}")
+            # ===== HUMIDITY CALIBRATION (h1-h7 per Bosch datasheet) =====
+            h_data1 = self.bus.read_i2c_block_data(self.addr, 0xE1, 3)  # E1, E2, E3
+            h_data2 = self.bus.read_i2c_block_data(self.addr, 0xE4, 5)  # E4-E8
+            
+            # h2 uses full E1 + upper nibble of E2
+            h2_raw = (h_data1[0] << 4) | (h_data1[1] >> 4)
+            # h1 uses lower nibble of E2 + full E3
+            h1_raw = (h_data1[2] << 4) | (h_data1[1] & 0x0F)
+            
+            # Post-processing per Adafruit library
+            self.cal['h2'] = (h2_raw * 16) + (h1_raw % 16)
+            self.cal['h1'] = h1_raw / 16.0
+            self.cal['h3'] = self._signed8(h_data2[0])
+            self.cal['h4'] = self._signed8(h_data2[1])
+            self.cal['h5'] = self._signed8(h_data2[2])
+            self.cal['h6'] = h_data2[3]  # unsigned
+            self.cal['h7'] = self._signed8(h_data2[4])
+            
+            print(f"📊 [BME680] Hum cal: h1={self.cal['h1']:.1f} h2={self.cal['h2']} h3={self.cal['h3']} h4={self.cal['h4']} h5={self.cal['h5']} h6={self.cal['h6']} h7={self.cal['h7']}")
+            
+            # ===== PRESSURE CALIBRATION (p1-p10 per Bosch datasheet) =====
+            p_data1 = self.bus.read_i2c_block_data(self.addr, 0x8E, 16)  # 0x8E-0x9D
+            p_data2 = self.bus.read_i2c_block_data(self.addr, 0x9E, 2)   # 0x9E-0x9F
+            
+            self.cal['p1'] = p_data1[0] | (p_data1[1] << 8)  # unsigned
+            self.cal['p2'] = self._signed16(p_data1[2] | (p_data1[3] << 8))
+            self.cal['p3'] = self._signed8(p_data1[4])
+            self.cal['p4'] = self._signed16(p_data1[6] | (p_data1[7] << 8))
+            self.cal['p5'] = self._signed16(p_data1[8] | (p_data1[9] << 8))
+            self.cal['p6'] = self._signed8(p_data1[11])
+            self.cal['p7'] = self._signed8(p_data1[10])
+            self.cal['p8'] = self._signed16(p_data1[14] | (p_data1[15] << 8))
+            self.cal['p9'] = self._signed16(p_data2[0] | (p_data2[1] << 8))
+            self.cal['p10'] = p_data1[13]  # unsigned
+            
+            print(f"🟢 BME680: Initialized with full calibration")
             self._initialized = True
             return True
         except Exception as e:
@@ -140,34 +185,73 @@ class BME680:
         
         try:
             # Configure and trigger measurement
-            self.bus.write_byte_data(self.addr, 0x5A, 0x73)  # Heater target
-            self.bus.write_byte_data(self.addr, 0x64, 0x59)  # Heater duration
-            self.bus.write_byte_data(self.addr, 0x71, 0x10)  # Enable gas
-            self.bus.write_byte_data(self.addr, 0x74, 0b01001001)  # Forced mode
+            self.bus.write_byte_data(self.addr, 0x72, 0x01)  # Humidity 1x
+            self.bus.write_byte_data(self.addr, 0x74, 0x54)  # Temp 2x, Pressure 4x, sleep mode
+            self.bus.write_byte_data(self.addr, 0x5A, 0x59)  # Heater target 320C
+            self.bus.write_byte_data(self.addr, 0x64, 0x59)  # Heater duration 100ms
+            self.bus.write_byte_data(self.addr, 0x71, 0x10)  # Enable gas, heater step 0
+            self.bus.write_byte_data(self.addr, 0x74, 0x55)  # Force mode
             
             time.sleep(0.25)  # Wait for measurement
             
-            # Read data registers
-            data = self.bus.read_i2c_block_data(self.addr, 0x1D, 16)
+            # Read data registers (0x1D to 0x2F)
+            data = self.bus.read_i2c_block_data(self.addr, 0x1D, 17)
             
-            # Temperature
+            # ===== TEMPERATURE (Bosch formula) =====
             raw_temp = ((data[5] << 12) | (data[6] << 4) | (data[7] >> 4))
-            var1 = (raw_temp / 16384.0) - (self.cal['t1'] / 1024.0)
-            var1 = var1 * self.cal['t2']
-            var2 = (raw_temp / 131072.0) - (self.cal['t1'] / 8192.0)
-            var2 = (var2 * var2) * (self.cal['t3'] * 16.0)
-            t_fine = var1 + var2
-            temp = t_fine / 5120.0
+            var1 = ((raw_temp / 16384.0) - (self.cal['t1'] / 1024.0)) * self.cal['t2']
+            var2 = ((raw_temp / 131072.0) - (self.cal['t1'] / 8192.0))
+            var2 = var2 * var2 * self.cal['t3'] * 16.0
+            self.t_fine = var1 + var2
+            temp = self.t_fine / 5120.0
             
-            # Humidity (simplified)
+            # ===== HUMIDITY (Adafruit formula with full calibration) =====
             raw_hum = (data[8] << 8) | data[9]
-            hum = raw_hum / 1000.0
+            temp_scaled = ((self.t_fine * 5) + 128) / 256
             
-            # Pressure (simplified)
+            var1 = (raw_hum - (self.cal['h1'] * 16.0)) - (
+                (temp_scaled * self.cal['h3']) / 200.0
+            )
+            var2 = (
+                self.cal['h2']
+                * (
+                    ((temp_scaled * self.cal['h4']) / 100.0)
+                    + (
+                        ((temp_scaled * ((temp_scaled * self.cal['h5']) / 100.0)) / 64.0)
+                        / 100.0
+                    )
+                    + 16384.0
+                )
+            ) / 1024.0
+            var3 = var1 * var2
+            var4 = self.cal['h6'] * 128.0
+            var4 = (var4 + ((temp_scaled * self.cal['h7']) / 100.0)) / 16.0
+            var5 = ((var3 / 16384.0) * (var3 / 16384.0)) / 1024.0
+            var6 = (var4 * var5) / 2.0
+            humidity = (((var3 + var6) / 1024.0) * 1000.0) / 4096.0
+            humidity /= 1000.0  # get back to RH %
+            
+            # Clamp to valid range
+            humidity = max(0.0, min(100.0, humidity))
+            
+            # ===== PRESSURE (Bosch formula with calibration) =====
             raw_pres = (data[2] << 12) | (data[3] << 4) | (data[4] >> 4)
-            pres = raw_pres / 100.0
+            var1 = (self.t_fine / 2.0) - 64000.0
+            var2 = var1 * var1 * self.cal['p6'] / 131072.0
+            var2 = var2 + (var1 * self.cal['p5'] * 2.0)
+            var2 = (var2 / 4.0) + (self.cal['p4'] * 65536.0)
+            var1 = (self.cal['p3'] * var1 * var1 / 16384.0 + self.cal['p2'] * var1) / 524288.0
+            var1 = (1.0 + var1 / 32768.0) * self.cal['p1']
+            pressure = 1048576.0 - raw_pres
+            if var1 != 0:
+                pressure = (pressure - (var2 / 4096.0)) * 6250.0 / var1
+                var1 = self.cal['p9'] * pressure * pressure / 2147483648.0
+                var2 = pressure * self.cal['p8'] / 32768.0
+                var3 = (pressure / 256.0) ** 3 * self.cal['p10'] / 131072.0
+                pressure = pressure + (var1 + var2 + var3 + self.cal['p7'] * 128.0) / 16.0
+            pressure = pressure / 100.0  # Convert to hPa
             
-            # Gas resistance
+            # ===== GAS RESISTANCE (with range table) =====
             gas_valid = (data[14] & 0x20) != 0
             heater_stab = (data[14] & 0x10) != 0
             
@@ -183,10 +267,65 @@ class BME680:
             else:
                 gas = 0.0
             
-            return {"temp": temp, "humidity": hum, "pressure": pres, "gas": gas}
+            return {"temp": temp, "humidity": humidity, "pressure": pressure, "gas": gas}
         except Exception as e:
             print(f"⚠️ BME680 Read Error: {e}")
             return None
+    
+    def calculate_iaq(self, gas, humidity):
+        """Calculate IAQ with adaptive baseline (matches Pi4 WASM plugin)"""
+        self.burn_in_count += 1
+        
+        # Smooth gas readings
+        self.gas_history.append(gas)
+        if len(self.gas_history) > 5:
+            self.gas_history.pop(0)
+        
+        # Calibration phase (60 seconds at 5s interval = 12 readings)
+        if self.burn_in_count < 12:
+            if gas > self.gas_baseline:
+                self.gas_baseline = gas
+            return 0, 0, "Calibrating"
+        
+        # Update gas baseline (slow adaptation)
+        if gas > self.gas_baseline:
+            self.gas_baseline = gas  # New clean air reference
+        else:
+            # Slowly drift baseline toward current reading
+            self.gas_baseline = self.gas_baseline * 0.995 + gas * 0.005
+        
+        # Gas score: Higher resistance = cleaner air = lower score
+        if self.gas_baseline > 0 and gas > 0:
+            gas_ratio = gas / self.gas_baseline
+            if gas_ratio >= 1.0:
+                gas_score = 0  # Better than baseline = excellent
+            else:
+                gas_score = (1.0 - gas_ratio) * 75.0
+            gas_score = max(0, min(75, gas_score))
+        else:
+            gas_score = 25  # Unknown, assume moderate
+        
+        # Humidity score: 40% is ideal, deviation adds to score
+        hum_offset = abs(humidity - 40.0)
+        hum_score = min(25, (hum_offset / 60.0) * 25.0)
+        
+        # Final IAQ (0-300 scale, lower is better)
+        iaq = int((gas_score + hum_score) * 3.0)
+        iaq = min(500, max(0, iaq))
+        
+        # Status text
+        if iaq <= 50:
+            status = "Excellent"
+        elif iaq <= 100:
+            status = "Good"
+        elif iaq <= 150:
+            status = "Moderate"
+        elif iaq <= 200:
+            status = "Poor"
+        else:
+            status = "Bad"
+        
+        return iaq, 1, status
 
 # ==============================================================================
 # SYSTEM METRICS
@@ -251,48 +390,16 @@ def main():
     api_thread = threading.Thread(target=start_api_server, daemon=True)
     api_thread.start()
     
-    bme = BME680(I2C_BUS, BME680_ADDR)
+    # BME680 removed - now Pi4-only sensor
     
     while True:
         readings = []
         timestamp = int(time.time() * 1000)
         
-        # 1. Read BME680
-        bme_data = bme.read()
-        if bme_data:
-            gas = bme_data["gas"]
-            hum = bme_data["humidity"]
-            
-            # Simple IAQ estimate (no calibration needed - just passive monitoring)
-            # Lower gas resistance = more VOCs = worse air quality
-            if gas >= 100:
-                iaq = 50  # Excellent
-            elif gas >= 50:
-                iaq = 100  # Good
-            elif gas >= 20:
-                iaq = 150  # Moderate
-            elif gas >= 10:
-                iaq = 200  # Poor
-            else:
-                iaq = 300  # Bad
-            
-            status = "Excellent" if iaq <= 50 else "Good" if iaq <= 100 else "Moderate" if iaq <= 150 else "Poor" if iaq <= 200 else "Bad"
-            print(f"🔘 [PASSIVE] {bme_data['temp']:.1f}°C | {hum:.0f}% | Gas: {gas:.0f} KΩ | IAQ: {iaq} ({status})")
-            
-            readings.append({
-                "sensor_id": f"{NODE_ID}:bme680",
-                "sensor_type": "bme680",
-                "data": {
-                    "temperature": bme_data["temp"],
-                    "humidity": bme_data["humidity"],
-                    "pressure": bme_data["pressure"],
-                    "gas_resistance": gas,
-                    "iaq_score": iaq
-                },
-                "timestamp_ms": timestamp
-            })
+        # BME680 removed - now Pi4-only sensor
+        # PiZero reports system stats and network health only
         
-        # 2. System stats
+        # 1. System stats
         cpu_temp = get_cpu_temp()
         mem_used, mem_total = get_memory()
         

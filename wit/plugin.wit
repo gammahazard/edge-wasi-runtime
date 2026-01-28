@@ -157,6 +157,35 @@ interface buzzer-controller {
 }
 
 // =============================================================================
+// fan-controller - capability for controlling cooling fan via relay
+// =============================================================================
+//
+// hardware: cooling fan connected via sainsmart relay IN4 on gpio 27
+// note: relay is ACTIVE LOW (gpio low = relay on = fan running)
+//
+// why this interface?
+//     same as buzzer-controller - wasm cannot access gpio directly.
+//     the host handles the active-low relay logic so plugins don't need
+//     to know the hardware details.
+//
+// relationships:
+//     - implemented by: host/src/hal.rs (hardware access)
+//     - linked in: host/src/runtime.rs (HostState impl)
+//     - called by: plugins/pi4-monitor/app.py (thermal control)
+//
+interface fan-controller {
+    // set fan state
+    //
+    // @param on: true = fan running, false = fan off
+    set-fan: func(on: bool);
+    
+    // get current fan state
+    //
+    // @returns: true if fan is currently running
+    get-fan-state: func() -> bool;
+}
+
+// =============================================================================
 // system-info - generic system statistics
 // =============================================================================
 //
@@ -287,6 +316,7 @@ interface pi-monitor-logic {
         memory-total-mb: u32,
         uptime-seconds: u64,
         timestamp-ms: u64,
+        fan-on: bool,
     }
 
     // poll pi system stats
@@ -350,6 +380,7 @@ world pi4-monitor-plugin {
     import led-controller;
     import buzzer-controller;
     import system-info;
+    import fan-controller;
     export pi-monitor-logic;
 }
 

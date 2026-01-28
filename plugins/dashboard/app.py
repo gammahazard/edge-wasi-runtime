@@ -51,6 +51,7 @@ class DashboardLogic(DashboardLogic):
         pi4_load = pi4.get("cpu_usage", 0.0)
         pi4_ram_used = pi4.get("memory_used_mb", 0)
         pi4_ram_total = pi4.get("memory_total_mb", 0)
+        pi4_fan_on = pi4.get("fan_on", False)
         
         pizero_cpu = pizero.get("cpu_temp", 0.0)
         pizero_load = pizero.get("cpu_usage", 0.0)
@@ -180,6 +181,25 @@ class DashboardLogic(DashboardLogic):
         .iaq.bad {{ background: #ff444433; color: var(--red); }}
         .iaq.calibrating {{ background: #aa66ff33; color: var(--purple); animation: pulse 2s infinite; }}
         @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
+        .fan-status {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            margin-left: 0.5rem;
+            font-size: 0.75rem;
+        }}
+        .fan-icon {{
+            display: inline-block;
+        }}
+        .fan-icon.spinning {{
+            animation: spin 1s linear infinite;
+        }}
+        @keyframes spin {{
+            from {{ transform: rotate(0deg); }}
+            to {{ transform: rotate(360deg); }}
+        }}
+        .fan-on {{ color: var(--green); }}
+        .fan-off {{ color: var(--dim); }}
         .node-status {{
             font-size: 0.7rem;
             margin-left: 0.5rem;
@@ -212,6 +232,16 @@ class DashboardLogic(DashboardLogic):
         .btn:hover {{
             background: var(--green);
             color: var(--bg);
+        }}
+        .btn:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+            border-color: var(--dim);
+            color: var(--dim);
+        }}
+        .btn:disabled:hover {{
+            background: var(--card);
+            color: var(--dim);
         }}
         .logs {{
             background: var(--card);
@@ -246,6 +276,37 @@ class DashboardLogic(DashboardLogic):
             border-bottom: 1px solid var(--border);
             color: var(--dim);
         }}
+        .offline-badge {{
+            background: var(--red);
+            color: #fff;
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.65rem;
+            font-weight: 700;
+            margin-left: 0.5rem;
+            animation: pulse 2s infinite;
+        }}
+        .source-label {{
+            font-size: 0.65rem;
+            margin-left: 0.5rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+        }}
+        .source-main {{
+            background: var(--green);
+            color: var(--bg);
+        }}
+        .source-backup {{
+            background: var(--yellow);
+            color: var(--bg);
+        }}
+        .card.offline {{
+            opacity: 0.6;
+            border-color: var(--red);
+        }}
+        .card.offline .value {{
+            color: var(--dim);
+        }}
     </style>
 </head>
 <body>
@@ -255,16 +316,16 @@ class DashboardLogic(DashboardLogic):
     </header>
     
     <div class="grid">
-        <div class="card">
-            <div class="card-title">DHT22 [ROOM]</div>
+        <div class="card" id="dht-card">
+            <div class="card-title">DHT22 [ROOM]<span id="dht-offline" class="offline-badge" style="display:none">OFFLINE</span></div>
             <div class="value" id="dht-temp">{dht_temp:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
                 <div class="metric"><span>HUMIDITY</span><span id="dht-hum">{dht_hum:.0f}%</span></div>
             </div>
         </div>
         
-        <div class="card">
-            <div class="card-title">BME680 [AIR]</div>
+        <div class="card" id="bme-card">
+            <div class="card-title">BME680 [AIR]<span id="bme-source" class="source-label source-main">source:main:spoke-pi4</span><span id="bme-offline" class="offline-badge" style="display:none">OFFLINE</span></div>
             <div class="value" id="bme-temp">{bme_temp:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
                 <div class="metric"><span>HUMIDITY</span><span id="bme-hum">{bme_hum:.0f}%</span></div>
@@ -274,8 +335,8 @@ class DashboardLogic(DashboardLogic):
             </div>
         </div>
         
-        <div class="card">
-            <div class="card-title" id="hub-title">REVPI HUB</div>
+        <div class="card" id="hub-card">
+            <div class="card-title" id="hub-title">REVPI HUB<span id="hub-offline" class="offline-badge" style="display:none">OFFLINE</span></div>
             <div class="value" id="hub-temp">{hub_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
                 <div class="metric"><span>CPU</span><span id="hub-load">{hub_load:.1f}%</span></div>
@@ -283,8 +344,8 @@ class DashboardLogic(DashboardLogic):
             </div>
         </div>
         
-        <div class="card">
-            <div class="card-title" id="pi4-title">PI4 SPOKE</div>
+        <div class="card" id="pi4-card">
+            <div class="card-title" id="pi4-title">PI4 SPOKE<span id="pi4-offline" class="offline-badge" style="display:none">OFFLINE</span><span class="fan-status"><span class="fan-icon {'spinning' if pi4_fan_on else ''}" id="pi4-fan-icon">🌀</span><span id="pi4-fan-text" class="{'fan-on' if pi4_fan_on else 'fan-off'}">{'FAN ON' if pi4_fan_on else 'FAN OFF'}</span></span></div>
             <div class="value" id="pi4-temp">{pi4_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
                 <div class="metric"><span>CPU</span><span id="pi4-load">{pi4_load:.1f}%</span></div>
@@ -292,7 +353,7 @@ class DashboardLogic(DashboardLogic):
             </div>
         </div>
         
-        <div class="card">
+        <div class="card" id="pizero-card">
             <div class="card-title" id="pizero-title">PIZERO <span class="node-status"><span class="dot {'online' if pizero_online else 'offline'}" id="pizero-dot"></span><span id="pizero-status">{'ONLINE' if pizero_online else 'OFFLINE'}</span></span></div>
             <div class="value" id="pizero-temp">{pizero_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
@@ -390,8 +451,10 @@ class DashboardLogic(DashboardLogic):
                     if (hum && dht.data.humidity != null) hum.textContent = dht.data.humidity.toFixed(0) + '%';
                 }}
                 
-                // Update BME680
-                const bme = findReading('bme680');
+                // Update BME680 - prioritize Pi4 (main) over PiZero (backup)
+                const bme_pi4_data = readings.find(r => r.sensor_id && r.sensor_id.includes('pi4') && r.sensor_id.includes('bme680'));
+                const bme_pizero_data = readings.find(r => r.sensor_id && r.sensor_id.includes('pizero') && r.sensor_id.includes('bme680'));
+                const bme = bme_pi4_data || bme_pizero_data;  // Prefer Pi4, fallback to PiZero
                 if (bme && bme.data) {{
                     const el = document.getElementById('bme-temp');
                     if (el && bme.data.temperature != null) el.innerHTML = bme.data.temperature.toFixed(1) + '<span class="unit">°C</span>';
@@ -444,6 +507,16 @@ class DashboardLogic(DashboardLogic):
                     if (load && pi4.data.cpu_usage != null) load.textContent = pi4.data.cpu_usage.toFixed(1) + '%';
                     const ram = document.getElementById('pi4-ram');
                     if (ram && pi4.data.memory_used_mb != null) ram.textContent = pi4.data.memory_used_mb + '/' + pi4.data.memory_total_mb + 'MB';
+                    // Update fan status
+                    const fanIcon = document.getElementById('pi4-fan-icon');
+                    const fanText = document.getElementById('pi4-fan-text');
+                    if (fanIcon && pi4.data.fan_on != null) {{
+                        fanIcon.className = 'fan-icon' + (pi4.data.fan_on ? ' spinning' : '');
+                    }}
+                    if (fanText && pi4.data.fan_on != null) {{
+                        fanText.textContent = pi4.data.fan_on ? 'FAN ON' : 'FAN OFF';
+                        fanText.className = pi4.data.fan_on ? 'fan-on' : 'fan-off';
+                    }}
                 }}
                 
                 // Update PiZero monitor
@@ -455,17 +528,7 @@ class DashboardLogic(DashboardLogic):
                     if (load && pizero.data.cpu_usage != null) load.textContent = pizero.data.cpu_usage.toFixed(1) + '%';
                     const ram = document.getElementById('pizero-ram');
                     if (ram && pizero.data.memory_used_mb != null) ram.textContent = pizero.data.memory_used_mb + '/' + pizero.data.memory_total_mb + 'MB';
-                    // Update PiZero online status
-                    const dot = document.getElementById('pizero-dot');
-                    const status = document.getElementById('pizero-status');
-                    if (dot) {{ dot.className = 'dot online'; }}
-                    if (status) {{ status.textContent = 'ONLINE'; }}
-                }} else {{
-                    // PiZero not responding - mark offline
-                    const dot = document.getElementById('pizero-dot');
-                    const status = document.getElementById('pizero-status');
-                    if (dot) {{ dot.className = 'dot offline'; }}
-                    if (status) {{ status.textContent = 'OFFLINE'; }}
+                    // Note: online/offline status is now handled by stale detection below
                 }}
                 
                 // Network pings from PiZero (sent as separate sensor)
@@ -490,6 +553,84 @@ class DashboardLogic(DashboardLogic):
                         if (pi4Val) {{ pi4Val.textContent = online ? pi4Ping.toFixed(1) + 'ms' : 'OFFLINE'; }}
                     }}
                 }}
+                
+                // ============================================
+                // STALE DATA DETECTION & SOURCE ATTRIBUTION
+                // ============================================
+                const STALE_THRESHOLD_MS = 15000; // 15 seconds
+                const now = Date.now();
+                
+                // Initialize or update last-seen timestamps
+                if (!window.sensorLastSeen) window.sensorLastSeen = {{}};
+                
+                // Track DHT22
+                if (dht && dht.data) {{
+                    window.sensorLastSeen.dht22 = now;
+                }}
+                const dhtStale = !window.sensorLastSeen.dht22 || (now - window.sensorLastSeen.dht22) > STALE_THRESHOLD_MS;
+                document.getElementById('dht-offline').style.display = dhtStale ? 'inline' : 'none';
+                document.getElementById('dht-card').classList.toggle('offline', dhtStale);
+                
+                // Track BME680 from Pi4 and PiZero (two sources)
+                const bme_pi4 = readings.find(r => r.sensor_id && r.sensor_id.includes('pi4') && r.sensor_id.includes('bme680'));
+                const bme_pizero = readings.find(r => r.sensor_id && r.sensor_id.includes('pizero') && r.sensor_id.includes('bme680'));
+                
+                if (bme_pi4 && bme_pi4.data) window.sensorLastSeen.bme_pi4 = now;
+                if (bme_pizero && bme_pizero.data) window.sensorLastSeen.bme_pizero = now;
+                
+                const pi4BmeStale = !window.sensorLastSeen.bme_pi4 || (now - window.sensorLastSeen.bme_pi4) > STALE_THRESHOLD_MS;
+                const pizeroBmeStale = !window.sensorLastSeen.bme_pizero || (now - window.sensorLastSeen.bme_pizero) > STALE_THRESHOLD_MS;
+                const bmeSource = document.getElementById('bme-source');
+                const bmeOffline = document.getElementById('bme-offline');
+                
+                if (!pi4BmeStale) {{
+                    // Main source (Pi4) is active
+                    bmeSource.textContent = 'source:main:spoke-pi4';
+                    bmeSource.className = 'source-label source-main';
+                    bmeSource.style.display = 'inline';
+                    bmeOffline.style.display = 'none';
+                    document.getElementById('bme-card').classList.remove('offline');
+                }} else if (!pizeroBmeStale) {{
+                    // Backup source (PiZero) is active
+                    bmeSource.textContent = 'source:backup:pizero';
+                    bmeSource.className = 'source-label source-backup';
+                    bmeSource.style.display = 'inline';
+                    bmeOffline.style.display = 'none';
+                    document.getElementById('bme-card').classList.remove('offline');
+                }} else {{
+                    // Both sources are stale
+                    bmeSource.style.display = 'none';
+                    bmeOffline.style.display = 'inline';
+                    document.getElementById('bme-card').classList.add('offline');
+                }}
+                
+                // Track Hub
+                if (hub && hub.data) window.sensorLastSeen.hub = now;
+                const hubStale = !window.sensorLastSeen.hub || (now - window.sensorLastSeen.hub) > STALE_THRESHOLD_MS;
+                document.getElementById('hub-offline').style.display = hubStale ? 'inline' : 'none';
+                document.getElementById('hub-card').classList.toggle('offline', hubStale);
+                
+                // Track Pi4 (already have pizero tracking above)
+                if (pi4 && pi4.data) window.sensorLastSeen.pi4 = now;
+                const pi4Stale = !window.sensorLastSeen.pi4 || (now - window.sensorLastSeen.pi4) > STALE_THRESHOLD_MS;
+                document.getElementById('pi4-offline').style.display = pi4Stale ? 'inline' : 'none';
+                document.getElementById('pi4-card').classList.toggle('offline', pi4Stale);
+                
+                // Track PiZero monitor (with stale timeout)
+                if (pizero && pizero.data) window.sensorLastSeen.pizero = now;
+                const pizeroStale = !window.sensorLastSeen.pizero || (now - window.sensorLastSeen.pizero) > STALE_THRESHOLD_MS;
+                const pizeroDot = document.getElementById('pizero-dot');
+                const pizeroStatus = document.getElementById('pizero-status');
+                if (pizeroStale) {{
+                    if (pizeroDot) pizeroDot.className = 'dot offline';
+                    if (pizeroStatus) pizeroStatus.textContent = 'OFFLINE';
+                    document.getElementById('pizero-card').classList.add('offline');
+                }} else {{
+                    if (pizeroDot) pizeroDot.className = 'dot online';
+                    if (pizeroStatus) pizeroStatus.textContent = 'ONLINE';
+                    document.getElementById('pizero-card').classList.remove('offline');
+                }}
+                
             }} catch(e) {{
                 console.error('Failed to fetch sensor data:', e);
             }}

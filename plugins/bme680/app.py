@@ -1,7 +1,7 @@
 """
 BME680 Plugin - Air Quality Sensor with IAQ Score
-Uses PASSIVE mode via generic I2C - compile once, run anywhere
-Controls LED 2 for air quality status
+Uses forced-mode measurement via generic I2C - compile once, run anywhere
+Controls LED 2 for air quality status (Pi4 only)
 """
 from wit_world.exports import Bme680Logic
 from wit_world.exports.bme680_logic import Bme680Reading
@@ -15,7 +15,7 @@ class BME680Driver:
         self.addr = addr
         self.cal = {}
         self._load_calibration()
-        self._configure_passive()
+        self._configure_sensor()
     
     def _i2c_read(self, reg: int, length: int) -> bytes:
         """Read bytes from register"""
@@ -92,20 +92,44 @@ class BME680Driver:
                 # Reasonable defaults
                 self.cal.update({'h1': 800, 'h2': 800, 'h3': 0, 'h4': 45, 'h5': 20, 'h6': 120, 'h7': -100})
                 print("⚠️ [BME680] Hum cal read incomplete, using defaults")
+            
+            # Pressure calibration coefficients (p1-p10 per Bosch datasheet)
+            p_data1 = self._i2c_read(0x8E, 16)  # 0x8E-0x9D
+            p_data2 = self._i2c_read(0x9E, 2)   # 0x9E-0x9F
+            
+            if len(p_data1) >= 16 and len(p_data2) >= 2:
+                self.cal['p1'] = p_data1[0] | (p_data1[1] << 8)  # unsigned
+                self.cal['p2'] = self._signed16(p_data1[2] | (p_data1[3] << 8))
+                p3_raw = p_data1[4]
+                self.cal['p3'] = p3_raw if p3_raw < 128 else p3_raw - 256
+                self.cal['p4'] = self._signed16(p_data1[6] | (p_data1[7] << 8))
+                self.cal['p5'] = self._signed16(p_data1[8] | (p_data1[9] << 8))
+                p6_raw = p_data1[11]
+                self.cal['p6'] = p6_raw if p6_raw < 128 else p6_raw - 256
+                p7_raw = p_data1[10]
+                self.cal['p7'] = p7_raw if p7_raw < 128 else p7_raw - 256
+                self.cal['p8'] = self._signed16(p_data1[14] | (p_data1[15] << 8))
+                self.cal['p9'] = self._signed16(p_data2[0] | (p_data2[1] << 8))
+                self.cal['p10'] = p_data1[13]  # unsigned
+                print(f"📊 [BME680] Pressure calibration loaded")
+            else:
+                # Reasonable defaults for sea level
+                self.cal.update({'p1': 36000, 'p2': -10000, 'p3': 88, 'p4': 7000, 'p5': 140, 'p6': 7, 'p7': 15, 'p8': -3000, 'p9': -3500, 'p10': 30})
+                print("⚠️ [BME680] Pressure cal read incomplete, using defaults")
                 
             # Store t_fine for humidity calc (will be updated during temp reading)
             self.t_fine = 0.0
             
         except Exception as e:
             print(f"⚠️ [BME680] Calibration error: {e}")
-            self.cal = {'t1': 26000, 't2': 26500, 't3': 3, 'h1': 800, 'h2': 800, 'h3': 0, 'h4': 45, 'h5': 20, 'h6': 120, 'h7': -100}
+            self.cal = {'t1': 26000, 't2': 26500, 't3': 3, 'h1': 800, 'h2': 800, 'h3': 0, 'h4': 45, 'h5': 20, 'h6': 120, 'h7': -100, 'p1': 36000, 'p2': -10000, 'p3': 88, 'p4': 7000, 'p5': 140, 'p6': 7, 'p7': 15, 'p8': -3000, 'p9': -3500, 'p10': 30}
             self.t_fine = 0.0
     
     def _signed16(self, val):
         return val - 65536 if val > 32767 else val
     
-    def _configure_passive(self):
-        """Configure for PASSIVE mode - trigger measurement on demand"""
+    def _configure_sensor(self):
+        """Configure sensor for forced-mode measurements"""
         try:
             # Soft reset
             self._i2c_write(0xE0, 0xB6)
@@ -119,7 +143,7 @@ class BME680Driver:
             self._i2c_write(0x64, 0x59)  # Heater duration 100ms
             self._i2c_write(0x71, 0x10)  # Enable gas, heater step 0
             
-            print("✓ BME680 configured in PASSIVE mode")
+            print("✓ BME680 configured (forced mode)")
         except Exception as e:
             print(f"⚠️ BME680 config error: {e}")
     
@@ -192,15 +216,36 @@ class BME680Driver:
             elif humidity < 0.0:
                 humidity = 0.0
             
-            # Parse pressure (0x1F-0x21 -> indices 2-4)
+            # Parse pressure (0x1F-0x21 -> indices 2-4) with Bosch formula
             raw_pres = (data[2] << 12) | (data[3] << 4) | (data[4] >> 4)
-            pressure = raw_pres / 100.0
+            var1 = (t_fine / 2.0) - 64000.0
+            var2 = var1 * var1 * self.cal['p6'] / 131072.0
+            var2 = var2 + (var1 * self.cal['p5'] * 2.0)
+            var2 = (var2 / 4.0) + (self.cal['p4'] * 65536.0)
+            var1 = (self.cal['p3'] * var1 * var1 / 16384.0 + self.cal['p2'] * var1) / 524288.0
+            var1 = (1.0 + var1 / 32768.0) * self.cal['p1']
+            pressure = 1048576.0 - raw_pres
+            if var1 != 0:
+                pressure = (pressure - (var2 / 4096.0)) * 6250.0 / var1
+                var1 = self.cal['p9'] * pressure * pressure / 2147483648.0
+                var2 = pressure * self.cal['p8'] / 32768.0
+                var3 = (pressure / 256.0) ** 3 * self.cal['p10'] / 131072.0
+                pressure = pressure + (var1 + var2 + var3 + self.cal['p7'] * 128.0) / 16.0
+            pressure = pressure / 100.0  # Convert to hPa
             
-            # Parse gas (0x2A-0x2B -> indices 13-14)
-            gas_status = data[14] & 0x30
-            if gas_status:
-                raw_gas = (data[13] << 2) | (data[14] >> 6)
-                gas = float(raw_gas) * 2.5
+            # Parse gas (0x2A-0x2B -> indices 13-14) with range table
+            gas_valid = (data[14] & 0x20) != 0
+            heater_stab = (data[14] & 0x10) != 0
+            
+            if gas_valid and heater_stab:
+                raw_gas = (data[13] << 2) | ((data[14] & 0xC0) >> 6)
+                gas_range = data[14] & 0x0F
+                gas_range_table = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+                if raw_gas > 0:
+                    gas = (1340.0 * 1000000.0) / (raw_gas * gas_range_table[gas_range]) / 1000.0
+                    gas = min(gas, 1000.0)  # Cap at 1000 KΩ
+                else:
+                    gas = 0.0
             else:
                 gas = 0.0
             

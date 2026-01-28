@@ -32,7 +32,14 @@ pub trait HardwareProvider: Send + Sync {
     fn read_dht22(&self, pin: u8) -> Result<(f32, f32)>;
     fn get_cpu_temp(&self) -> f32;
     fn buzz(&self, pin: u8, pattern: &str) -> Result<()>;
+    fn set_fan(&self, pin: u8, on: bool) -> Result<()>;
+    fn get_fan_state(&self, pin: u8) -> bool;
 }
+
+// Global fan state - shared across all HAL instances
+// Using AtomicBool to track fan state since write_gpio is now used directly
+use std::sync::atomic::{AtomicBool, Ordering};
+pub static GLOBAL_FAN_STATE: AtomicBool = AtomicBool::new(false);
 
 // ==============================================================================================
 // MOCK IMPLEMENTATION (For WSL / Non-Hardware Build)
@@ -105,6 +112,16 @@ impl HardwareProvider for Hal {
     fn buzz(&self, pin: u8, pattern: &str) -> Result<()> {
         tracing::debug!("[MOCK BUZZER] Pin {} pattern {}", pin, pattern);
         Ok(())
+    }
+
+    fn set_fan(&self, pin: u8, on: bool) -> Result<()> {
+        tracing::debug!("[MOCK FAN] Pin {} set to {}", pin, if on { "ON" } else { "OFF" });
+        GLOBAL_FAN_STATE.store(on, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn get_fan_state(&self, _pin: u8) -> bool {
+        GLOBAL_FAN_STATE.load(Ordering::SeqCst)
     }
 }
 
@@ -205,6 +222,9 @@ strip.show()
         use rppal::gpio::Gpio;
         let gpio = Gpio::new()?;
         let mut p = gpio.get(pin)?.into_output();
+        // CRITICAL: Prevent GPIO from resetting when dropped
+        // Without this, the fan turns off as soon as this function returns
+        p.set_reset_on_drop(false);
         if level { p.set_high(); } else { p.set_low(); }
         Ok(())
     }
@@ -317,5 +337,37 @@ GPIO.cleanup({0})
             anyhow::bail!("Buzzer failed: {}", stderr);
         }
         Ok(())
+    }
+
+    fn set_fan(&self, pin: u8, on: bool) -> Result<()> {
+        use std::process::Command;
+        
+        // Update tracked state
+        GLOBAL_FAN_STATE.store(on, Ordering::SeqCst);
+        
+        // Active-low relay: LOW = relay ON = fan running
+        let gpio_level = if on { "LOW" } else { "HIGH" };
+        
+        let script = format!(
+            r#"
+import RPi.GPIO as GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup({0}, GPIO.OUT)
+GPIO.output({0}, GPIO.{1})
+"#,
+            pin, gpio_level
+        );
+        
+        let output = Command::new("python3").args(["-c", &script]).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Fan control failed: {}", stderr);
+        }
+        Ok(())
+    }
+
+    fn get_fan_state(&self, _pin: u8) -> bool {
+        GLOBAL_FAN_STATE.load(Ordering::SeqCst)
     }
 }
