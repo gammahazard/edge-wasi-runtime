@@ -78,6 +78,8 @@ pub struct ClusterConfig {
     pub role: String,      // "hub" or "spoke"
     pub node_id: String,
     pub hub_url: String,   // URL to push data to (if spoke)
+    #[serde(default)]
+    pub spoke_buzzer_url: String,  // URL to forward buzzer requests to (if hub)
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]

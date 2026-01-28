@@ -656,6 +656,7 @@ impl WasmRuntime {
                             "cpu_usage": stats.cpu_usage,
                             "memory_used_mb": stats.memory_used_mb,
                             "memory_total_mb": stats.memory_total_mb,
+                            "uptime_seconds": stats.uptime_seconds,
                         }),
                     });
                 }
@@ -675,6 +676,7 @@ impl WasmRuntime {
                             "cpu_usage": stats.cpu_usage,
                             "memory_used_mb": stats.memory_used_mb,
                             "memory_total_mb": stats.memory_total_mb,
+                            "uptime_seconds": stats.uptime_seconds,
                         }),
                     });
                 }

@@ -40,15 +40,23 @@ fn get_log_buffer() -> &'static Mutex<VecDeque<String>> {
     LOG_BUFFER.get_or_init(|| Mutex::new(VecDeque::with_capacity(100)))
 }
 
-/// Add a message to the log buffer
+/// Add a message to the log buffer with EST timestamp
 fn log_msg(msg: &str) {
+    use chrono::{Utc, FixedOffset};
+    
+    // EST is UTC-5
+    let est = FixedOffset::west_opt(5 * 3600).unwrap();
+    let now = Utc::now().with_timezone(&est);
+    let timestamp = now.format("[%Y/%m/%d @ %I:%M%P]").to_string();
+    let timestamped_msg = format!("{} {}", timestamp, msg);
+    
     if let Ok(mut buf) = get_log_buffer().lock() {
         if buf.len() >= 100 {
             buf.pop_front();
         }
-        buf.push_back(msg.to_string());
+        buf.push_back(timestamped_msg.clone());
     }
-    println!("{}", msg);
+    println!("{}", timestamped_msg);
 }
 
 #[derive(Clone)]
@@ -247,14 +255,49 @@ async fn api_handler(State(state): State<ApiState>) -> Json<AppState> {
     Json(s.clone())
 }
 
-/// Returns logs for the dashboard
+/// Returns logs for the dashboard (merges host logs + WASM plugin logs)
 async fn logs_handler() -> impl IntoResponse {
-    let logs: Vec<String> = if let Ok(buf) = get_log_buffer().lock() {
-        buf.iter().cloned().collect()
-    } else {
-        vec![]
-    };
-    Json(serde_json::json!({"logs": logs}))
+    let mut all_logs: Vec<String> = Vec::new();
+    
+    // 1. Add host logs from in-memory buffer
+    if let Ok(buf) = get_log_buffer().lock() {
+        all_logs.extend(buf.iter().cloned());
+    }
+    
+    // 2. Add WASM plugin logs from file (last 50 lines)
+    if let Ok(content) = std::fs::read_to_string("wasi-logs.log") {
+        let lines: Vec<&str> = content.lines().collect();
+        let start = if lines.len() > 50 { lines.len() - 50 } else { 0 };
+        for line in &lines[start..] {
+            if !line.trim().is_empty() {
+                all_logs.push(line.to_string());
+            }
+        }
+    }
+    
+    // 3. Sort by timestamp if present, otherwise maintain order
+    // Most logs have EST timestamps at start like "[01:05:23 EST]"
+    all_logs.sort_by(|a, b| {
+        // Extract timestamp if present for sorting
+        fn get_time(s: &str) -> Option<String> {
+            if s.starts_with('[') {
+                s.find(']').map(|i| s[1..i].to_string())
+            } else {
+                None
+            }
+        }
+        match (get_time(a), get_time(b)) {
+            (Some(ta), Some(tb)) => ta.cmp(&tb),
+            _ => std::cmp::Ordering::Equal
+        }
+    });
+    
+    // Keep last 100 logs
+    if all_logs.len() > 100 {
+        all_logs = all_logs.split_off(all_logs.len() - 100);
+    }
+    
+    Json(serde_json::json!({"logs": all_logs}))
 }
 
 /// Receives sensor data from spoke nodes
@@ -300,50 +343,93 @@ async fn buzzer_test_handler() -> impl IntoResponse {
 }
 
 /// Dashboard buzzer buttons
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct BuzzerQuery {
     action: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct BuzzerBody {
+    pattern: Option<String>,
 }
 
 async fn buzzer_handler(
     State(state): State<ApiState>,
     Query(params): Query<BuzzerQuery>,
+    body: Option<axum::Json<BuzzerBody>>,
 ) -> impl IntoResponse {
+    // Get pattern from JSON body (forwarded from Hub) or query params (direct dashboard)
+    let pattern = body
+        .and_then(|b| b.pattern.clone())
+        .or_else(|| params.action.clone().map(|a| match a.as_str() {
+            "beep" => "single".to_string(),
+            "beep3" => "triple".to_string(),
+            "long" => "long".to_string(),
+            _ => "single".to_string(),
+        }))
+        .unwrap_or_else(|| "single".to_string());
+    
+    let action = params.action.unwrap_or_else(|| pattern.clone());
+    let spoke_url = &state.config.cluster.spoke_buzzer_url;
+    
+    log_msg(&format!("🔔 [BUZZER] Received action='{}', spoke_url='{}'", action, spoke_url));
+    
+    // If we have a spoke buzzer URL configured, forward the request there
+    if !spoke_url.is_empty() {
+        log_msg(&format!("🔔 [BUZZER] Forwarding to spoke: {}", spoke_url));
+        
+        let client = reqwest::Client::new();
+        
+        // Map dashboard actions to spoke buzzer patterns
+        let pattern = match action.as_str() {
+            "beep" => "single",
+            "beep3" => "triple",
+            "long" => "long",
+            _ => "single",
+        };
+        
+        log_msg(&format!("🔔 [BUZZER] Sending pattern='{}' to {}", pattern, spoke_url));
+        
+        let body = serde_json::json!({
+            "pattern": pattern
+        });
+        
+        match client.post(spoke_url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await 
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                log_msg(&format!("🔔 [BUZZER] Spoke responded with status: {}", status));
+                if status.is_success() {
+                    return axum::http::StatusCode::OK;
+                } else {
+                    log_msg(&format!("❌ [BUZZER] Spoke error: {:?}", resp.text().await));
+                    return axum::http::StatusCode::BAD_GATEWAY;
+                }
+            }
+            Err(e) => {
+                log_msg(&format!("❌ [BUZZER] Failed to reach spoke: {}", e));
+                return axum::http::StatusCode::BAD_GATEWAY;
+            }
+        }
+    }
+    
+    // Fallback: try local GPIO (for when running on spoke directly)
+    log_msg(&format!("🔔 [BUZZER] No spoke URL, trying local GPIO pin {}", state.config.buzzer.gpio_pin));
+    
     let hal = crate::hal::Hal::new();
     use crate::hal::HardwareProvider;
     
     let pin = state.config.buzzer.gpio_pin;
-    let action = params.action.unwrap_or_else(|| "beep".to_string());
     
-    // CRITICAL: Set GPIO mode to output before writing
-    let _ = hal.set_gpio_mode(pin, "OUT");
+    log_msg(&format!("🔔 [BUZZER] Local pattern='{}' on pin {}", pattern, pin));
     
-    match action.as_str() {
-        "beep" => {
-            let _ = hal.write_gpio(pin, false); // On
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            let _ = hal.write_gpio(pin, true);  // Off
-        }
-        "beep3" => {
-            for _ in 0..3 {
-                let _ = hal.write_gpio(pin, false);
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                let _ = hal.write_gpio(pin, true);
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-        }
-        "long" => {
-            let _ = hal.write_gpio(pin, false);
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            let _ = hal.write_gpio(pin, true);
-        }
-        "on" => {
-            let _ = hal.write_gpio(pin, false); // On
-        }
-        "off" => {
-            let _ = hal.write_gpio(pin, true);  // Off
-        }
-        _ => {}
+    match hal.buzz(pin, &pattern) {
+        Ok(_) => log_msg("🔔 [BUZZER] Done."),
+        Err(e) => log_msg(&format!("❌ [BUZZER] Failed: {}", e)),
     }
     
     axum::http::StatusCode::OK

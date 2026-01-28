@@ -31,6 +31,7 @@ pub trait HardwareProvider: Send + Sync {
     fn sync_leds(&self) -> Result<()>;
     fn read_dht22(&self, pin: u8) -> Result<(f32, f32)>;
     fn get_cpu_temp(&self) -> f32;
+    fn buzz(&self, pin: u8, pattern: &str) -> Result<()>;
 }
 
 // ==============================================================================================
@@ -99,6 +100,11 @@ impl HardwareProvider for Hal {
 
     fn get_cpu_temp(&self) -> f32 {
         45.0 // Mock data
+    }
+
+    fn buzz(&self, pin: u8, pattern: &str) -> Result<()> {
+        tracing::debug!("[MOCK BUZZER] Pin {} pattern {}", pin, pattern);
+        Ok(())
     }
 }
 
@@ -236,5 +242,80 @@ except Exception:
             .and_then(|s| s.trim().parse::<f32>().ok())
             .map(|t| t / 1000.0)
             .unwrap_or(0.0)
+    }
+
+    fn buzz(&self, pin: u8, pattern: &str) -> Result<()> {
+        use std::process::Command;
+        
+        // Generate Python script based on pattern
+        // This runs the entire beep sequence in one Python process,
+        // keeping the GPIO handle alive during the full duration
+        let script = match pattern {
+            "single" => format!(
+                r#"
+import RPi.GPIO as GPIO
+import time
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup({0}, GPIO.OUT)
+GPIO.output({0}, GPIO.LOW)   # Relay ON (active low)
+time.sleep(0.1)
+GPIO.output({0}, GPIO.HIGH)  # Relay OFF
+GPIO.cleanup({0})
+"#,
+                pin
+            ),
+            "triple" => format!(
+                r#"
+import RPi.GPIO as GPIO
+import time
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup({0}, GPIO.OUT)
+for _ in range(3):
+    GPIO.output({0}, GPIO.LOW)
+    time.sleep(0.1)
+    GPIO.output({0}, GPIO.HIGH)
+    time.sleep(0.1)
+GPIO.cleanup({0})
+"#,
+                pin
+            ),
+            "long" => format!(
+                r#"
+import RPi.GPIO as GPIO
+import time
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup({0}, GPIO.OUT)
+GPIO.output({0}, GPIO.LOW)
+time.sleep(0.5)
+GPIO.output({0}, GPIO.HIGH)
+GPIO.cleanup({0})
+"#,
+                pin
+            ),
+            _ => format!(
+                r#"
+import RPi.GPIO as GPIO
+import time
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+GPIO.setup({0}, GPIO.OUT)
+GPIO.output({0}, GPIO.LOW)
+time.sleep(0.1)
+GPIO.output({0}, GPIO.HIGH)
+GPIO.cleanup({0})
+"#,
+                pin
+            ),
+        };
+
+        let output = Command::new("python3").args(["-c", &script]).output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Buzzer failed: {}", stderr);
+        }
+        Ok(())
     }
 }

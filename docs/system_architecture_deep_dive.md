@@ -20,7 +20,7 @@ The system has evolved into a **Hybrid Hub-and-Spoke** harvester. It uses WASM f
 *   **Pi Zero**:
     *   **IP**: `192.168.7.12`
     *   **Runtime**: Native Python (pizero_service.py)
-    *   **Role**: Reads BME680 via smbus2, monitors network health
+    *   **Role**: Reads BME680 via smbus2 (shared I2C bus), monitors network health
     *   **Why Native?**: 512MB RAM too small for WASM runtime (~300MB)
 
 ---
@@ -58,7 +58,7 @@ The Rust host is the secure execution environment for sandboxed WASM plugins.
 ### Service Features
 ```python
 # pizero_service.py
-- BME680 via smbus2 (direct I2C)
+- BME680 via smbus2 (shared I2C bus with Pi4)
 - CPU temperature from /sys/class/thermal
 - Memory from /proc/meminfo
 - Network health (ping Hub + Pi4)
@@ -76,18 +76,23 @@ Restart=always
 
 ## 4. 🧩 The Plugins: WASM (Hub + Pi4)
 
-| Plugin | Role | LED |
-|--------|------|-----|
-| `dht22` | Temperature/Humidity | 1 |
-| `bme680` | Air Quality (IAQ) | 2 |
-| `pi4-monitor` | Spoke CPU/RAM | 3 |
-| `revpi-monitor` | Hub CPU/RAM | 3 |
-| `dashboard` | HTML Renderer | - |
+### LED Strip (Pi4 Only)
+The single 11-pixel WS2812 LED strip is connected to Pi4 via GPIO18.
+
+| LED | Owner | Purpose | Colors |
+|-----|-------|---------|--------|
+| 0 | Host (main.rs) | Heartbeat | 💙 Blue ↔ Cyan (alternates each poll) |
+| 1 | `dht22` plugin | Room Temperature | 🔵→🟢→🟠→🔴 (cold→hot) |
+| 2 | `bme680` plugin | Air Quality (IAQ) | 🟢→🟡→🔴, 🟣 Purple = calibrating |
+| 3 | `pi4-monitor` | Pi4 CPU Temp | 🟢→🟠→🔴 |
+| 4-10 | - | Available for future use | - |
+
+*Note: Hub has no LED strip connected. `revpi-monitor` and `dashboard` run on Hub but don't control LEDs.*
 
 ### 🔔 Alert Logic
 Thresholds are defined in Python plugins and hot-swappable:
 - Room temp > 30°C → LED 1 RED + buzzer
-- CPU temp > 75°C → LED 3 RED + beeps
+- CPU temp > 75°C → LED 3 RED + beeps (pi4-monitor)
 - IAQ > 200 → LED 2 RED + alert
 
 ---

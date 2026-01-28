@@ -88,10 +88,12 @@ Update plugin Python code → rebuild WASM → host auto-reloads without restart
 
 ### 4. Multi-Node Dashboard
 Single dashboard shows:
-- DHT22 & BME680 sensor data
-- All three node health stats
+- **Live sensor updates** every 3 seconds (no page refresh)
+- DHT22 & BME680 sensor data with humidity/temp/IAQ
+- All three node health stats (CPU, RAM, uptime)
 - Log viewer with tabs for HUB/PI4/PIZERO
-- Buzzer controls
+- **Buzzer controls** (short beep, 3x beep, long tone)
+- EST timestamps on all logs
 
 ## Quick Start
 
@@ -116,8 +118,11 @@ Single dashboard shows:
 ### Run Host
 
 ```bash
-cd host
-cargo run --release --config config/spoke.toml
+# On Hub (RevPi):
+./wasi-host config/hub.toml
+
+# On Spoke (Pi4):
+./wasi-host config/spoke.toml
 ```
 
 Dashboard available at `http://192.168.7.10:3000`
@@ -144,6 +149,12 @@ interface system-info {
     get-memory-usage: func() -> tuple<u32, u32>;
     get-cpu-usage: func() -> f32;
     get-uptime: func() -> u64;
+}
+
+// Buzzer control
+interface buzzer-controller {
+    buzz: func(duration-ms: u32);
+    beep: func(count: u8, duration-ms: u32, interval-ms: u32);
 }
 ```
 

@@ -6,7 +6,7 @@
 role = "hub"
 hub_url = ""
 node_id = "revpi-hub"
-spoke_buzzer_url = "http://192.168.7.11:3001/buzzer"
+spoke_buzzer_url = "http://192.168.7.11:3000/api/buzzer"
 
 [polling]
 interval_seconds = 2

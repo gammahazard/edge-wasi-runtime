@@ -64,7 +64,10 @@ class DashboardLogic(DashboardLogic):
         pi4_ping = network.get("192.168.7.11", -1)
         
         # IAQ classification
-        if iaq <= 50:
+        if iaq == 0:
+            iaq_text = "CALIBRATING"
+            iaq_class = "calibrating"
+        elif iaq <= 50:
             iaq_text = "EXCELLENT"
             iaq_class = "excellent"
         elif iaq <= 100:
@@ -175,6 +178,8 @@ class DashboardLogic(DashboardLogic):
         .iaq.moderate {{ background: #ffcc0033; color: var(--yellow); }}
         .iaq.poor {{ background: #ff990033; color: #ff9900; }}
         .iaq.bad {{ background: #ff444433; color: var(--red); }}
+        .iaq.calibrating {{ background: #aa66ff33; color: var(--purple); animation: pulse 2s infinite; }}
+        @keyframes pulse {{ 0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} }}
         .node-status {{
             font-size: 0.7rem;
             margin-left: 0.5rem;
@@ -246,61 +251,61 @@ class DashboardLogic(DashboardLogic):
 <body>
     <header>
         <h1>[ HARVESTER OS ]</h1>
-        <div class="uptime">UPTIME: {uptime_str}</div>
+        <div class="uptime" id="uptime">UPTIME: {uptime_str}</div>
     </header>
     
     <div class="grid">
         <div class="card">
             <div class="card-title">DHT22 [ROOM]</div>
-            <div class="value">{dht_temp:.1f}<span class="unit">°C</span></div>
+            <div class="value" id="dht-temp">{dht_temp:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
-                <div class="metric"><span>HUMIDITY</span>{dht_hum:.0f}%</div>
+                <div class="metric"><span>HUMIDITY</span><span id="dht-hum">{dht_hum:.0f}%</span></div>
             </div>
         </div>
         
         <div class="card">
             <div class="card-title">BME680 [AIR]</div>
-            <div class="value">{bme_temp:.1f}<span class="unit">°C</span></div>
+            <div class="value" id="bme-temp">{bme_temp:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
-                <div class="metric"><span>HUMIDITY</span>{bme_hum:.0f}%</div>
-                <div class="metric"><span>PRESSURE</span>{pressure:.0f}hPa</div>
-                <div class="metric"><span>GAS</span>{gas:.0f}KΩ</div>
-                <div class="metric"><span>IAQ</span><span class="iaq {iaq_class}">{iaq} {iaq_text}</span></div>
+                <div class="metric"><span>HUMIDITY</span><span id="bme-hum">{bme_hum:.0f}%</span></div>
+                <div class="metric"><span>PRESSURE</span><span id="bme-pressure">{pressure:.0f}hPa</span></div>
+                <div class="metric"><span>GAS</span><span id="bme-gas">{gas:.0f}KΩ</span></div>
+                <div class="metric"><span>IAQ</span><span id="bme-iaq" class="iaq {iaq_class}">{iaq} {iaq_text}</span></div>
             </div>
         </div>
         
         <div class="card">
-            <div class="card-title {'warn' if hub_cpu > 60 else ''}">REVPI HUB</div>
-            <div class="value">{hub_cpu:.1f}<span class="unit">°C</span></div>
+            <div class="card-title" id="hub-title">REVPI HUB</div>
+            <div class="value" id="hub-temp">{hub_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
-                <div class="metric"><span>CPU</span>{hub_load:.1f}%</div>
-                <div class="metric"><span>RAM</span>{hub_ram_used}/{hub_ram_total}MB</div>
+                <div class="metric"><span>CPU</span><span id="hub-load">{hub_load:.1f}%</span></div>
+                <div class="metric"><span>RAM</span><span id="hub-ram">{hub_ram_used}/{hub_ram_total}MB</span></div>
             </div>
         </div>
         
         <div class="card">
-            <div class="card-title {'warn' if pi4_cpu > 60 else ''}">PI4 SPOKE</div>
-            <div class="value">{pi4_cpu:.1f}<span class="unit">°C</span></div>
+            <div class="card-title" id="pi4-title">PI4 SPOKE</div>
+            <div class="value" id="pi4-temp">{pi4_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
-                <div class="metric"><span>CPU</span>{pi4_load:.1f}%</div>
-                <div class="metric"><span>RAM</span>{pi4_ram_used}/{pi4_ram_total}MB</div>
+                <div class="metric"><span>CPU</span><span id="pi4-load">{pi4_load:.1f}%</span></div>
+                <div class="metric"><span>RAM</span><span id="pi4-ram">{pi4_ram_used}/{pi4_ram_total}MB</span></div>
             </div>
         </div>
         
         <div class="card">
-            <div class="card-title">PIZERO <span class="node-status"><span class="dot {'online' if pizero_online else 'offline'}"></span>{'ONLINE' if pizero_online else 'OFFLINE'}</span></div>
-            <div class="value">{pizero_cpu:.1f}<span class="unit">°C</span></div>
+            <div class="card-title" id="pizero-title">PIZERO <span class="node-status"><span class="dot {'online' if pizero_online else 'offline'}" id="pizero-dot"></span><span id="pizero-status">{'ONLINE' if pizero_online else 'OFFLINE'}</span></span></div>
+            <div class="value" id="pizero-temp">{pizero_cpu:.1f}<span class="unit">°C</span></div>
             <div class="metrics">
-                <div class="metric"><span>CPU</span>{pizero_load:.1f}%</div>
-                <div class="metric"><span>RAM</span>{pizero_ram_used}/{pizero_ram_total}MB</div>
+                <div class="metric"><span>CPU</span><span id="pizero-load">{pizero_load:.1f}%</span></div>
+                <div class="metric"><span>RAM</span><span id="pizero-ram">{pizero_ram_used}/{pizero_ram_total}MB</span></div>
             </div>
         </div>
         
         <div class="card">
             <div class="card-title">NETWORK [PING from PIZERO]</div>
             <div class="metrics" style="border-top: none; padding-top: 0;">
-                <div class="metric"><span class="dot {'online' if hub_ping >= 0 else 'offline'}"></span><span>HUB</span>{f'{hub_ping:.1f}ms' if hub_ping >= 0 else 'OFFLINE'}</div>
-                <div class="metric"><span class="dot {'online' if pi4_ping >= 0 else 'offline'}"></span><span>PI4</span>{f'{pi4_ping:.1f}ms' if pi4_ping >= 0 else 'OFFLINE'}</div>
+                <div class="metric" id="net-hub"><span class="dot {'online' if hub_ping >= 0 else 'offline'}" id="net-hub-dot"></span><span>HUB</span><span id="net-hub-val">{f'{hub_ping:.1f}ms' if hub_ping >= 0 else 'OFFLINE'}</span></div>
+                <div class="metric" id="net-pi4"><span class="dot {'online' if pi4_ping >= 0 else 'offline'}" id="net-pi4-dot"></span><span>PI4</span><span id="net-pi4-val">{f'{pi4_ping:.1f}ms' if pi4_ping >= 0 else 'OFFLINE'}</span></div>
             </div>
         </div>
     </div>
@@ -334,6 +339,7 @@ class DashboardLogic(DashboardLogic):
         
         function switchLogs(node) {{
             currentNode = node;
+            localStorage.setItem('logTab', node);  // Remember selection
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
             fetchLogs();
@@ -343,16 +349,156 @@ class DashboardLogic(DashboardLogic):
             try {{
                 const res = await fetch(logUrls[currentNode]);
                 const data = await res.json();
+                const container = document.getElementById('log-content');
+                const wasAtBottom = container.scrollHeight - container.clientHeight <= container.scrollTop + 50;
                 const html = (data.logs || []).map(l => '<div class="log-line">' + l + '</div>').join('');
-                document.getElementById('log-content').innerHTML = html || '<div class="log-line">No logs</div>';
+                container.innerHTML = html || '<div class="log-line">No logs</div>';
+                // Auto-scroll to bottom if user was already at bottom
+                if (wasAtBottom) {{
+                    container.scrollTop = container.scrollHeight;
+                }}
             }} catch(e) {{
                 document.getElementById('log-content').innerHTML = '<div class="log-line">Failed to fetch logs</div>';
             }}
         }}
         
+        // Restore saved tab on load
+        const savedTab = localStorage.getItem('logTab');
+        if (savedTab && logUrls[savedTab]) {{
+            currentNode = savedTab;
+            document.querySelectorAll('.tab').forEach(t => {{
+                t.classList.toggle('active', t.textContent.toLowerCase() === savedTab);
+            }});
+        }}
+        
+        async function fetchSensorData() {{
+            try {{
+                const res = await fetch('/api/readings');
+                const state = await res.json();
+                const readings = state.readings || [];
+                console.log('[LIVE UPDATE] Got', readings.length, 'readings');
+                
+                // Helper to find a reading by sensor_id pattern
+                const findReading = (pattern) => readings.find(r => r.sensor_id && r.sensor_id.includes(pattern));
+                
+                // Update DHT22
+                const dht = findReading('dht22');
+                if (dht && dht.data) {{
+                    const el = document.getElementById('dht-temp');
+                    if (el && dht.data.temperature != null) el.innerHTML = dht.data.temperature.toFixed(1) + '<span class="unit">°C</span>';
+                    const hum = document.getElementById('dht-hum');
+                    if (hum && dht.data.humidity != null) hum.textContent = dht.data.humidity.toFixed(0) + '%';
+                }}
+                
+                // Update BME680
+                const bme = findReading('bme680');
+                if (bme && bme.data) {{
+                    const el = document.getElementById('bme-temp');
+                    if (el && bme.data.temperature != null) el.innerHTML = bme.data.temperature.toFixed(1) + '<span class="unit">°C</span>';
+                    const hum = document.getElementById('bme-hum');
+                    if (hum && bme.data.humidity != null) hum.textContent = bme.data.humidity.toFixed(0) + '%';
+                    const pres = document.getElementById('bme-pressure');
+                    if (pres && bme.data.pressure != null) pres.textContent = bme.data.pressure.toFixed(0) + 'hPa';
+                    const gas = document.getElementById('bme-gas');
+                    if (gas && bme.data.gas_resistance != null) gas.textContent = bme.data.gas_resistance.toFixed(0) + 'KΩ';
+                    // Update IAQ with calibrating support
+                    const iaqEl = document.getElementById('bme-iaq');
+                    if (iaqEl && bme.data.iaq_score != null) {{
+                        const iaq = bme.data.iaq_score;
+                        let text, cls;
+                        if (iaq === 0) {{ text = '0 CALIBRATING'; cls = 'calibrating'; }}
+                        else if (iaq <= 50) {{ text = iaq + ' EXCELLENT'; cls = 'excellent'; }}
+                        else if (iaq <= 100) {{ text = iaq + ' GOOD'; cls = 'good'; }}
+                        else if (iaq <= 150) {{ text = iaq + ' MODERATE'; cls = 'moderate'; }}
+                        else if (iaq <= 200) {{ text = iaq + ' POOR'; cls = 'poor'; }}
+                        else {{ text = iaq + ' BAD'; cls = 'bad'; }}
+                        iaqEl.textContent = text;
+                        iaqEl.className = 'iaq ' + cls;
+                    }}
+                }}
+                
+                // Update Hub monitor
+                const hub = readings.find(r => r.sensor_id && r.sensor_id.includes('hub:') && r.sensor_id.includes('monitor'));
+                if (hub && hub.data) {{
+                    const el = document.getElementById('hub-temp');
+                    if (el && hub.data.cpu_temp != null) el.innerHTML = hub.data.cpu_temp.toFixed(1) + '<span class="unit">°C</span>';
+                    const load = document.getElementById('hub-load');
+                    if (load && hub.data.cpu_usage != null) load.textContent = hub.data.cpu_usage.toFixed(1) + '%';
+                    const ram = document.getElementById('hub-ram');
+                    if (ram && hub.data.memory_used_mb != null) ram.textContent = hub.data.memory_used_mb + '/' + hub.data.memory_total_mb + 'MB';
+                    // Update uptime in header
+                    if (hub.data.uptime_seconds != null) {{
+                        const up_h = Math.floor(hub.data.uptime_seconds / 3600);
+                        const up_m = Math.floor((hub.data.uptime_seconds % 3600) / 60);
+                        const uptimeEl = document.getElementById('uptime');
+                        if (uptimeEl) uptimeEl.textContent = 'UPTIME: ' + up_h + 'h ' + up_m + 'm';
+                    }}
+                }}
+                
+                // Update Pi4 monitor
+                const pi4 = readings.find(r => r.sensor_id && r.sensor_id.includes('pi4') && r.sensor_id.includes('monitor'));
+                if (pi4 && pi4.data) {{
+                    const el = document.getElementById('pi4-temp');
+                    if (el && pi4.data.cpu_temp != null) el.innerHTML = pi4.data.cpu_temp.toFixed(1) + '<span class="unit">°C</span>';
+                    const load = document.getElementById('pi4-load');
+                    if (load && pi4.data.cpu_usage != null) load.textContent = pi4.data.cpu_usage.toFixed(1) + '%';
+                    const ram = document.getElementById('pi4-ram');
+                    if (ram && pi4.data.memory_used_mb != null) ram.textContent = pi4.data.memory_used_mb + '/' + pi4.data.memory_total_mb + 'MB';
+                }}
+                
+                // Update PiZero monitor
+                const pizero = readings.find(r => r.sensor_id && r.sensor_id.includes('pizero') && r.sensor_id.includes('monitor'));
+                if (pizero && pizero.data) {{
+                    const el = document.getElementById('pizero-temp');
+                    if (el && pizero.data.cpu_temp != null) el.innerHTML = pizero.data.cpu_temp.toFixed(1) + '<span class="unit">°C</span>';
+                    const load = document.getElementById('pizero-load');
+                    if (load && pizero.data.cpu_usage != null) load.textContent = pizero.data.cpu_usage.toFixed(1) + '%';
+                    const ram = document.getElementById('pizero-ram');
+                    if (ram && pizero.data.memory_used_mb != null) ram.textContent = pizero.data.memory_used_mb + '/' + pizero.data.memory_total_mb + 'MB';
+                    // Update PiZero online status
+                    const dot = document.getElementById('pizero-dot');
+                    const status = document.getElementById('pizero-status');
+                    if (dot) {{ dot.className = 'dot online'; }}
+                    if (status) {{ status.textContent = 'ONLINE'; }}
+                }} else {{
+                    // PiZero not responding - mark offline
+                    const dot = document.getElementById('pizero-dot');
+                    const status = document.getElementById('pizero-status');
+                    if (dot) {{ dot.className = 'dot offline'; }}
+                    if (status) {{ status.textContent = 'OFFLINE'; }}
+                }}
+                
+                // Network pings from PiZero (sent as separate sensor)
+                const network = readings.find(r => r.sensor_id && r.sensor_id.includes('network'));
+                if (network && network.data) {{
+                    const hubPing = network.data['192.168.7.10'];
+                    const pi4Ping = network.data['192.168.7.11'];
+                    // Update Hub ping display
+                    if (hubPing != null) {{
+                        const hubDot = document.getElementById('net-hub-dot');
+                        const hubVal = document.getElementById('net-hub-val');
+                        const online = hubPing >= 0;
+                        if (hubDot) {{ hubDot.className = 'dot ' + (online ? 'online' : 'offline'); }}
+                        if (hubVal) {{ hubVal.textContent = online ? hubPing.toFixed(1) + 'ms' : 'OFFLINE'; }}
+                    }}
+                    // Update Pi4 ping display
+                    if (pi4Ping != null) {{
+                        const pi4Dot = document.getElementById('net-pi4-dot');
+                        const pi4Val = document.getElementById('net-pi4-val');
+                        const online = pi4Ping >= 0;
+                        if (pi4Dot) {{ pi4Dot.className = 'dot ' + (online ? 'online' : 'offline'); }}
+                        if (pi4Val) {{ pi4Val.textContent = online ? pi4Ping.toFixed(1) + 'ms' : 'OFFLINE'; }}
+                    }}
+                }}
+            }} catch(e) {{
+                console.error('Failed to fetch sensor data:', e);
+            }}
+        }}
+        
         fetchLogs();
+        fetchSensorData();
         setInterval(fetchLogs, 3000);
-        setInterval(() => location.reload(), 10000);
+        setInterval(fetchSensorData, 3000);
     </script>
 </body>
 </html>'''

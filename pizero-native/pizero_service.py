@@ -43,10 +43,18 @@ log_buffer = deque(maxlen=100)
 original_print = print
 
 def buffered_print(*args, **kwargs):
-    """Print and also save to log buffer."""
+    """Print and also save to log buffer with EST timestamp."""
+    from datetime import datetime, timezone, timedelta
+    
+    # EST is UTC-5
+    est = timezone(timedelta(hours=-5))
+    now = datetime.now(est)
+    timestamp = now.strftime("[%Y/%m/%d @ %I:%M%p]").lower()
+    
     msg = " ".join(str(a) for a in args)
-    log_buffer.append(msg)
-    original_print(*args, **kwargs)
+    timestamped_msg = f"{timestamp} {msg}"
+    log_buffer.append(timestamped_msg)
+    original_print(timestamped_msg, **kwargs)
 
 # Override print to capture logs
 print = buffered_print
